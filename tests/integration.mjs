@@ -2,6 +2,23 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const base=process.env.LENSY_TEST_URL||'http://localhost:5173';
+// Optional owner-private Site access is read only from stdin, never argv or disk.
+if(process.env.LENSY_TEST_SERVICE_ACCESS==='1') {
+  const input=await new Promise(resolve=>{
+    let value='';const terminal=process.stdin.isTTY;
+    if(terminal)process.stdin.setRawMode(true);
+    console.log('Ready for test access JSON on stdin (input hidden).');
+    process.stdin.setEncoding('utf8');
+    const onData=chunk=>{value+=chunk;if(/[\r\n]/.test(value)){process.stdin.removeListener('data',onData);if(terminal)process.stdin.setRawMode(false);process.stdin.pause();resolve(value);}};
+    process.stdin.on('data',onData);process.stdin.resume();
+  });
+  const {token}=JSON.parse(input);
+  const directFetch=globalThis.fetch;
+  globalThis.fetch=(url,options={})=>{
+    if(new URL(url).origin!==new URL(base).origin) throw new Error('Service access is restricted to the selected Site.');
+    return directFetch(url,{...options,redirect:'manual',headers:{...options.headers,'OAI-Sites-Authorization':'Bearer '+token}});
+  };
+}
 let cookie='';
 async function request(path,options={}) {
   const headers={origin:base,...(cookie?{cookie}:{}),...options.headers};
