@@ -1,51 +1,47 @@
-# Lensy
+﻿# Lensy
 
-A media verification workspace built from `../lensy-mission-07.md`. React, TypeScript, Vinext (Next.js App Router), Cloudflare D1 for results, and R2 for uploaded files.
+Live media verification with visible prices, original network responses, and shareable receipts. Built with React, TypeScript, Vinext, Cloudflare D1, and R2.
 
-## Run locally
+Every check requests a real Telegraph quote. A funded Ethereum Sepolia wallet signs the exact escrow payment before any paid request is sent. The app has no simulated verification mode or hard-coded verdicts. Previous simulated records are retained in storage but excluded from results, history, sharing, media access, and the community feed.
+
+## Use
+
+1. Paste a direct public HTTPS image or video URL.
+2. Request an exact network quote.
+3. Connect your Ethereum wallet and approve the quoted payment.
+4. Read the actual provider response, reported confidence, cost, and original receipt.
+5. Share the stored completed check; opening it never purchases another check.
+
+Direct uploads require provider-accessible storage. This private Site cannot expose its uploaded files to external verification providers, so the verification input is a public media URL. The Site remains private; shared links are subject to Site access settings.
+
+Payments use Telegraph escrow on Ethereum Sepolia. Fund your wallet's escrow following https://anjoman.ai/docs/using/escrow-inference. Lensy never asks for or stores a wallet private key.
+
+The backend discovers current schemas for `MEDIA_FORENSIC_VERIFY_GENERAL` and optional `IMAGE_CAPTIONING_GENERAL`, then reads an unsigned 402 quote. Each approval signs the network's exact EIP-191 message template with a fresh nonce and validity window under two minutes. Verification and captioning run in parallel. A database transition prevents submitting a quote twice. Missing or unstructured fields do not become invented verdicts or confidence scores. Failed verification remains a failed check even if optional captioning succeeds.
+
+Raw receipts are stored with their result. Epoch proof links use real receipt hashes and epoch IDs. Final proofs may not exist until the epoch settles. If the connection fails after payment, inspect the saved check and network ledger before creating another purchase; the app does not automatically retry purchases.
+
+## Local development
 
 ```sh
 npm ci
-npm run db:generate
 npm run build
-node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_<generated-name>.sql
+node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_slimy_robin_chapel.sql
 npm run dev
 ```
 
-On Windows use `npm.cmd` if PowerShell blocks `npm.ps1`. Apply the actual generated migration filename. The preview starts at `http://localhost:5173`. Local state persists under ignored `.wrangler/state/`.
+On Windows use `npm.cmd` if PowerShell blocks `npm.ps1`. Apply migrations once per local database. Preview: `http://localhost:5173`. State is stored under ignored `.wrangler/state`.
 
-## Behavior
-
-- Upload JPG, PNG, WebP, MP4, or WebM up to 20 MB, or save a direct HTTPS media URL.
-- Demo uploads are stored with an **inconclusive, unanalyzed** result. Samples are clearly illustrative; no fabricated receipts or charges.
-- My checks is scoped to the authenticated Site user, or an HttpOnly anonymous session cookie. Only shared checks are readable by other sessions. Shared media follows the result's access rules.
-- Share links read stored results and never call Telegraph. Adding to the feed is explicit opt-in; results can be unlisted.
-- Download reports as JSON and inspect raw payment receipts.
-- Responsive interface, keyboard focus, dialog focus containment, reduced-motion support, and status messages.
-
-## Telegraph live mode
-
-Choose **Live network** from the workspace selector or wallet dialog. Use an Ethereum wallet browser extension with funded **Telegraph escrow on Sepolia**. Lensy does not store or ask for wallet private keys. Funding instructions: https://anjoman.ai/docs/using/escrow-inference
-
-Live checks currently require a **public HTTPS media URL**. Uploaded files remain demo-only because the privately hosted Site cannot make uploads publicly accessible to external providers.
-
-The backend discovers the current schemas for `MEDIA_FORENSIC_VERIFY_GENERAL` and optional `IMAGE_CAPTIONING_GENERAL`, then obtains a 402 escrow quote. The exact price is displayed before any signature. Each request is signed using the network's verbatim EIP-191 message template, a fresh nonce, and a validity window under two minutes. Paid requests run in parallel. A database state transition prevents submitting the same quote twice.
-
-Results retain provider answers, reported costs, and original payment receipts. Epoch proof URLs use the actual receipt hash and epoch; a finalized proof may not exist until the epoch settles. Raw, rejected, or absent fields do not become confident verdicts. Provider outages and partial failures are displayed. A lost connection after payment requires inspecting the stored check and network ledger; no automatic purchase retry occurs.
-
-**Live payments require a funded wallet and have not been exercised by the build agent.** Discovery and quote contracts follow the live official documentation. No paid calls are made by demo mode or shared result reads.
-
-## Validate
+## Validation
 
 ```sh
 node node_modules/typescript/bin/tsc --noEmit
 node tests/integration.mjs
 ```
 
-The integration script needs the running local preview and creates a test check. It verifies upload validation, private access, sharing, media permissions, feed opt-in/unlisting, cross-origin write protection, and the share page.
+The integration script requests a live unsigned quote, verifies that no result exists before payment, rejects missing/invalid signatures locally, checks access boundaries, and confirms that removed simulated endpoints cannot create results. It makes **no paid requests**. End-to-end payment needs a funded wallet and has not been exercised by the build agent.
 
 ## Hosting
 
-`.openai/hosting.json` retains the Site identity and declares `DB` and `BUCKET`. Sites applies generated Drizzle migrations during publication. The Site starts owner-private, so hosted links are subject to that access policy even after sharing within Lensy.
+`.openai/hosting.json` declares the retained Site identity, `DB`, and `BUCKET`. Sites applies the checked-in Drizzle migration on publication. Browser QA requires an available browser installation.
 
-Sample photography: Unsplash, bundled in `public/images`. Coast: photo-1473116763249-2faaef81ccda; portrait: photo-1534528741775-53994a69daeb; city: photo-1519608487953-e999c86e7455.
+Decorative coast photography: Unsplash photo-1473116763249-2faaef81ccda, bundled in `public/images/coast.jpg`. No verdict is assigned to this image.

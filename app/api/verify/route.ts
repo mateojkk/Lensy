@@ -2,7 +2,7 @@ import { db, json, NODE, requireOwner, route, upstream, VERIFY } from "../../../
 import type { Check, Receipt } from "../../../lib/lensy";
 export async function POST(req:Request) { return route(req,async()=>{
   const owner=requireOwner(req); const {id,payments}=await req.json() as any;
-  const row=await db().prepare("SELECT * FROM checks WHERE id = ? AND owner = ?").bind(id,owner).first();
+  const row=await db().prepare("SELECT * FROM checks WHERE id = ? AND owner = ? AND mode = 'live'").bind(id,owner).first();
   if(!row) return json({error:"Quote not found."},404);
   if(row.status!=="quoted") return json({error:"This check has already been submitted. Open it from My checks; submitting again could create a second charge."},409);
   const stored=JSON.parse(row.result as string); const quotes=stored.quotes;
@@ -11,6 +11,7 @@ export async function POST(req:Request) { return route(req,async()=>{
   for(let i=0;i<quotes.length;i++) {
     if(typeof payments[i]!=="string"||payments[i].length>12000) throw new Error("Invalid payment authorization.");
     const p=JSON.parse(atob(payments[i]));
+    if(!/^0x[a-fA-F0-9]{130}$/.test(p.payload?.signature||"")) throw new Error("A valid wallet signature is required for every paid check.");
     if(p.scheme!=="escrow" || p.network!==quotes[i].escrow.network || p.payload?.authorization?.value!==quotes[i].amount || p.payload?.authorization?.to?.toLowerCase()!==quotes[i].escrow.payTo.toLowerCase()) throw new Error("The payment authorization does not match this quote.");
   }
   const claimed=await db().prepare("UPDATE checks SET status = 'running' WHERE id = ? AND owner = ? AND status = 'quoted' RETURNING id").bind(id,owner).first();
@@ -31,7 +32,7 @@ export async function POST(req:Request) { return route(req,async()=>{
   const verification=ok.find(r=>r.intent===VERIFY)?.body;
   const r=verification?.result_shape==="intent"?verification.result:null;
   const accepted=["Authentic","Likely authentic","Manipulated","Likely manipulated","Inconclusive"];
-  const check:Check={...stored,status:ok.length?"complete":"failed",verdict:accepted.includes(r?.verdict)?r.verdict:"Inconclusive",confidence:typeof r?.confidence==="number"&&r.confidence>=0&&r.confidence<=1?r.confidence:null,summary:typeof r?.summary==="string"?r.summary:verification?"The provider returned an unstructured answer. Inspect the raw response for details.":"The verification could not be completed.",findings:Array.isArray(r?.findings)?r.findings.map((f:any)=>typeof f==="string"?f:JSON.stringify(f)):[],receipts:ok.map(r=>r.receipt),cost:(ok.reduce((sum,r)=>sum+Math.round(Number(r.receipt.amount)*1e6),0)/1e6).toFixed(6),warning:[...errors,...(ok.some(r=>!r.known)?["Some costs were not returned. The total only includes reported charges."]:[]),...(ok.some(r=>!r.hasReceipt)?["A provider returned no payment receipt. Its raw response is available."]:[])].join(" ")||undefined};
+  const check:Check={...stored,status:verification?"complete":"failed",verdict:accepted.includes(r?.verdict)?r.verdict:verification?"No structured verdict":"Verification unavailable",confidence:typeof r?.confidence==="number"&&r.confidence>=0&&r.confidence<=1?r.confidence:null,summary:typeof r?.summary==="string"?r.summary:verification?"The provider returned an unstructured answer. Inspect the raw response for details.":"The verification could not be completed.",findings:Array.isArray(r?.findings)?r.findings.map((f:any)=>typeof f==="string"?f:JSON.stringify(f)):[],receipts:ok.map(r=>r.receipt),cost:(ok.reduce((sum,r)=>sum+Math.round(Number(r.receipt.amount)*1e6),0)/1e6).toFixed(6),warning:[...errors,...(ok.some(r=>!r.known)?["Some costs were not returned. The total only includes reported charges."]:[]),...(ok.some(r=>!r.hasReceipt)?["A provider returned no payment receipt. Its raw response is available."]:[])].join(" ")||undefined};
   delete (check as any).quotes;
   const description=ok.find(r=>r.intent!==VERIFY)?.body.result;
   if(description) check.caption=typeof description==="string"?description:JSON.stringify(description);

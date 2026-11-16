@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { sampleCheck, type Check } from "./lensy";
+import type { Check } from "./lensy";
 
 export const NODE = "https://devnode.telegraphprotocol.com";
 export const VERIFY = "MEDIA_FORENSIC_VERIFY_GENERAL";
@@ -21,8 +21,7 @@ export function mediaUrl(value: unknown) {
 }
 export function fromRow(row: Record<string,unknown>): Check { return { ...JSON.parse(row.result as string), id:row.id, name:row.name, media:row.media, mediaType:row.media_type, mode:row.mode, createdAt:row.created_at, status:row.status, shared:!!row.shared, listed:!!row.listed } as Check; }
 export async function findCheck(id:string, req:Request, sharedOnly=false) {
-  const sample = sampleCheck(id); if(sample) return sample;
-  const row = await db().prepare("SELECT * FROM checks WHERE id = ? AND (shared = 1 OR owner = ?)").bind(id, sharedOnly ? "" : identity(req)||"").first();
+  const row = await db().prepare("SELECT * FROM checks WHERE id = ? AND mode = 'live' AND status != 'quoted' AND (shared = 1 OR owner = ?)").bind(id, sharedOnly ? "" : identity(req)||"").first();
   return row ? fromRow(row) : null;
 }
 export async function insertCheck(req:Request, check:Check) {
@@ -40,10 +39,10 @@ export async function discover() {
 export async function quote(intent:string,url:string) {
   const payload= { intent, params: { [intent === VERIFY ? "media_url" : "image_url"]: url } };
   const schema = await upstream("/engine/v1/intents/"+intent);
-  if (!schema.res.ok || !schema.body.miner_count) throw new Error("No Telegraph provider is available for this check right now. Try an example while the network is unavailable.");
+  if (!schema.res.ok || !schema.body.miner_count) throw new Error("No Telegraph provider is available for this check right now. Please try again later.");
   const param=schema.body.request?.params?.find((p:any)=>/url/.test(p.name));
   if(param) payload.params = {[param.name]:url};
-  const requestBody=schema.body.request ? payload : {intent,query:"Describe this image: "+url};
+  const requestBody=schema.body.request ? payload : {intent,query:(intent===VERIFY?"Inspect this media for generation or manipulation: ":"Describe this image: ")+url};
   const {res,body}=await upstream("/engine/v1/ask",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(requestBody)});
   if (res.status!==402) throw new Error(body.message || body.error || "The network did not return a payment quote.");
   const escrow=body.accepts?.find((a:any)=>a.scheme==="escrow");

@@ -1,6 +1,7 @@
-import { insertCheck, json, mediaUrl, quote, VERIFY, CAPTION, route } from "../../../lib/server";
+import { insertCheck, json, mediaUrl, quote, VERIFY, CAPTION, route, requireOwner } from "../../../lib/server";
 import type { Check } from "../../../lib/lensy";
 export async function POST(req:Request) { return route(req,async()=>{
+  requireOwner(req);
   const data=await req.json() as any; const url=mediaUrl(data.url);
   const quotes=await Promise.all([quote(VERIFY,url),...(data.caption?[quote(CAPTION,url)]:[])]);
   const check:Check={id:crypto.randomUUID(),name:new URL(url).pathname.split("/").pop()||"Linked media",media:url,mediaType:/\.(mp4|webm)(\?|$)/i.test(url)?"video/mp4":"image/jpeg",mode:"live",createdAt:new Date().toISOString(),verdict:"Awaiting payment",confidence:null,summary:"",findings:[],cost:"0.000000",receipts:[],status:"quoted"};
