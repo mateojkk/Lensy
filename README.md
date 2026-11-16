@@ -4,6 +4,8 @@ Live media verification with visible prices, original network responses, and sha
 
 Every check requests a real Telegraph quote. A funded Ethereum Sepolia wallet signs the exact escrow payment before any paid request is sent. The app has no simulated verification mode or hard-coded verdicts. Previous simulated records are retained in storage but excluded from results, history, sharing, media access, and the community feed.
 
+The landing page is at `/`, the verification workspace is at `/app`, and shared results are at `/s/:id`. The interface uses black, white, and brown with locally hosted Geist Light, Regular, and Medium (300–500). The Geist font license is included in `public/fonts/OFL.txt`.
+
 ## Use
 
 1. Paste a direct public HTTPS image or video URL.
