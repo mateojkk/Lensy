@@ -22,7 +22,9 @@ let cookie='';
 async function request(path,options={}) {
   const headers={origin:base,...(cookie?{cookie}:{}),...options.headers};
   const response=await fetch(base+path,{...options,headers});
-  return {response,data:await response.json()};
+  const text=await response.text();
+  let data;try{data=JSON.parse(text);}catch{data={error:text};}
+  return {response,data};
 }
 const post=body=>({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
 const config=await request('/api/config');

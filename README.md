@@ -24,12 +24,10 @@ Raw receipts are stored with their result. Epoch proof links use real receipt ha
 
 ```sh
 npm ci
-npm run build
-node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_slimy_robin_chapel.sql
-npm run dev
+npm run local
 ```
 
-On Windows use `npm.cmd` if PowerShell blocks `npm.ps1`. Apply migrations once per local database. Preview: `http://localhost:5173`. State is stored under ignored `.wrangler/state`.
+On Windows use `npm.cmd` if PowerShell blocks `npm.ps1`. The native Node local runner starts at `http://127.0.0.1:5173`, applies pending migrations before accepting requests, and stores real SQLite data in ignored `.sites-runtime/local/lensy.sqlite`. It requires Node 22.13 or newer and does not need the Cloudflare Windows runtime. Verification still calls the live Telegraph testnet. Production builds retain the Cloudflare D1 and R2 bindings.
 
 ## Validation
 
