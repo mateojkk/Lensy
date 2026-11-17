@@ -6,7 +6,7 @@ Every check requests a real Telegraph quote. A funded Ethereum Sepolia wallet si
 
 The landing page is at `/`, the verification workspace is at `/app`, private saved results are at `/app/checks/:id`, and shared results are at `/s/:token`. The interface uses black, white, and brown with locally hosted Geist Light, Regular, and Medium (300–500). The Geist font license is included in `public/fonts/OFL.txt`.
 
-The header's **Color theme** selector offers Light, Dark, and System on both the landing page and workspace. System follows the device setting. Your preference persists across pages and reloads and synchronizes between tabs. Theme changes also work when browser storage is unavailable.
+The header's moon/sun button switches between dark and light mode on both the landing page and workspace. It initially follows your device setting. Your choice persists across pages and reloads and synchronizes between tabs. Theme changes also work when browser storage is unavailable.
 
 ## Use
 
