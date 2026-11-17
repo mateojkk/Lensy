@@ -30,6 +30,14 @@ USDC arithmetic uses integer millionths. A missing charge displays **Not reporte
 
 My checks includes exact reported spend, original receipt counts, status filters, pagination, and a full JSON export. Completed checks can be shared with an opaque link and optionally listed in the feed. Revoking sharing disables the link and removes the feed entry. Sharing again creates a new token; the old token remains invalid. Private check endpoints, exports, statistics, and sharing changes enforce ownership.
 
+## Compare and export evidence
+
+Select up to four records in My checks, then choose **Compare selected**. The dedicated `/app/compare` workspace preserves selection order and can be refreshed or bookmarked. Every record must belong to the current workspace. Comparison reads stored evidence without buying another check, retains known charges when the total is unconfirmed, and counts unique receipt hashes.
+
+History and feed searches now run across all eligible stored records before pagination. Search by name, source URL, or verdict, with status filters for completed, partial, running, failed, and needs-review checks.
+
+**Download report** on a result or comparison saves a self-contained HTML evidence packet with findings, charges, payment receipts, and original provider responses. Open it offline or use the browser's Print → Save as PDF. Comparisons also export CSV. Exported files are snapshots and remain accessible after a share link is revoked. See [Phase 03](docs/phase-03.md).
+
 ## Local development
 
 ```sh

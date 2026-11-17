@@ -25,6 +25,43 @@ const params=id=>({params:Promise.resolve({id})});
 const tokenParams=token=>({params:Promise.resolve({token})});
 function response(intent=VERIFY_INTENT,{cost=true,receipt=true,status=200}={}){const body={intent,result_shape:'intent',result:{verdict:'Likely authentic',confidence:.92,summary:'Provider assessment.',findings:['Consistent detail']},...(cost?{cost_usd:.01}:{})};const raw={receipt_hash:hash,rail:'escrow',payer,miner:'123',intent,amount_uusdc:'10000',epoch_id:314};return {body,res:new Response(JSON.stringify(body),{status,headers:receipt?{'X-PAYMENT-RESPONSE':btoa(JSON.stringify(raw))}:{}})};}
 const body=async r=>{const value=await r.json();return value;};
+const compareRoute=await load('app/api/compare/route');
+const {comparisonSummary,evidenceHTML,evidenceCSV,parseComparisonIds}=await load('lib/evidence');
+
+test('comparison preserves order, requires ownership of every check, and never purchases',async t=>{
+ const db=database(),first=seed(db,{...base(),status:'complete'}),second=seed(db,{...base(),status:'partial',cost:null,knownCost:'0.010001'}),privateCheck=seed(db,{...base(),status:'complete'},bob),unpaid=seed(db,base());
+ let calls=0;const original=globalThis.fetch;globalThis.fetch=async()=>{calls++;throw new Error('Comparisons must not call a provider');};t.after(()=>globalThis.fetch=original);
+ const query=ids=>request('/api/compare?ids='+ids.join(','),null,alice,'GET');
+ const report=await body(await compareRoute.GET(query([second.id,first.id])));assert.deepEqual(report.checks.map(c=>c.id),[second.id,first.id]);assert.equal(report.summary.cost,null);assert.equal(report.summary.knownCost,'0.010001');assert.ok(report.checks.every(c=>!('quotes'in c)&&c.viewerIsOwner));
+ assert.equal((await compareRoute.GET(query([first.id,privateCheck.id]))).status,404);assert.equal((await compareRoute.GET(query([unpaid.id]))).status,404);
+ assert.equal((await compareRoute.GET(query([first.id,first.id]))).status,400);assert.equal((await compareRoute.GET(request('/api/compare?ids='+first.id,null,null,'GET'))).status,400);assert.equal(calls,0);
+ assert.throws(()=>parseComparisonIds('a,b,c,d,e'));assert.throws(()=>parseComparisonIds('a,'));assert.throws(()=>parseComparisonIds('a/<script>'));
+});
+test('comparison totals retain known partial charges and deduplicate receipt hashes',()=>{
+ const first={...base(),status:'complete',verdict:'Likely authentic',cost:'9007199254740993.000001',receipts:[{hash,amount:'0.010000',intent:VERIFY_INTENT}]};
+ const second={...base(),status:'partial',verdict:'Likely AI-generated',cost:null,knownCost:'0.000009',receipts:[{hash:hash.toUpperCase(),amount:'0.010000',intent:VERIFY_INTENT}]};
+ const totals=comparisonSummary([first,second]);assert.equal(totals.cost,null);assert.equal(totals.knownCost,'9007199254740993.000010');assert.equal(totals.receipts,1);assert.equal(totals.unconfirmed,1);assert.equal(totals.differingVerdicts,true);
+});
+test('offline evidence reports escape untrusted responses and exclude executable URLs',()=>{
+ const unsafe='</pre><script>globalThis.reportExecuted=true</script><img src=x onerror=alert(1)>';
+ const check={...base(),status:'complete',name:unsafe,summary:unsafe,findings:[unsafe],media:'javascript:alert(1)',providers:[{intent:VERIFY_INTENT,status:'succeeded',cost:null,response:{answer:unsafe}}],receipts:[{intent:unsafe,amount:null,hash,url:'javascript:alert(2)',raw:{unsafe}}]};
+ const html=evidenceHTML([check],'2026-11-17T00:00:00.000Z');assert.ok(!html.includes('<script>'));assert.ok(!html.includes('<img'));assert.ok(!html.includes('href="javascript:'));assert.ok(html.includes('&lt;script&gt;'));assert.ok(html.includes("default-src 'none'"));assert.ok(html.includes('Not reported'));assert.ok(html.includes(hash));assert.ok(html.includes('Original provider responses'));
+});
+test('CSV evidence handles quotes/newlines and neutralizes spreadsheet formulas',()=>{
+ const csv=evidenceCSV([{...base(),name:'  =HYPERLINK("https://example.com")\nname',verdict:'+malicious',cost:null,knownCost:'0.000001'}]);
+ assert.ok(csv.startsWith('\uFEFF'));assert.ok(csv.includes('"\'  =HYPERLINK(""https://example.com"")\nname"'));assert.ok(csv.includes('"\'+malicious"'));assert.ok(csv.includes('"0.000001"'));
+});
+test('history searches beyond pagination, treats SQL wildcards literally, and filters recovery states',async()=>{
+ const db=database();for(let i=0;i<55;i++)seed(db,{...base(),createdAt:new Date(Date.now()-i*1000).toISOString(),status:'complete',name:'recent-'+i+'.jpg'});
+ const target=seed(db,{...base(),createdAt:'2020-01-01T00:00:00.000Z',status:'complete',name:'100%_original.jpg',verdict:'Likely AI-generated'});
+ seed(db,{...base(),status:'complete',name:'private-100%_original.jpg'},bob);
+ const get=async query=>body(await historyRoute.GET(request('/api/checks?'+query,null,alice,'GET')));
+ assert.equal((await get('')).checks.length,50);assert.equal((await get('q=100%25_')).checks[0].id,target.id);assert.equal((await get('q=AI-generated')).checks.length,1);assert.equal((await get('q=100%25_&status=failed')).checks.length,0);
+ const stalled=seed(db,{...base(),status:'running',startedAt:'2020-01-01T00:00:00.000Z',providers:[{intent:VERIFY_INTENT,status:'pending',cost:null}]});
+ const pending=seed(db,{...base(),status:'running',startedAt:new Date().toISOString(),providers:[{intent:VERIFY_INTENT,status:'pending',cost:null}]});
+ assert.deepEqual((await get('status=interrupted')).checks.map(c=>c.id),[stalled.id]);assert.deepEqual((await get('status=running')).checks.map(c=>c.id),[pending.id]);
+ assert.equal((await historyRoute.GET(request('/api/checks?status=quoted',null,alice,'GET'))).status,400);
+});
 
 test('USDC calculations preserve six decimals and large exact values',()=>{
  assert.equal(toMicros('1000000000000000.000001'),1000000000000000000001n);assert.equal(fromMicros(1000000000000000000001n),'1000000000000000.000001');
