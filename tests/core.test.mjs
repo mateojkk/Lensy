@@ -1,0 +1,122 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {DatabaseSync} from 'node:sqlite';
+import {readFileSync,readdirSync} from 'node:fs';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+const output=process.env.LENSY_TEST_BUILD;
+globalThis.__lensyTestEnvironment={};
+const load=p=>import(pathToFileURL(path.join(output,p+'.js')).href);
+const {toMicros,fromMicros,totalCosts,formatMoney}=await load('lib/money');
+const {readProviderResult,assembleCheck,runVerification,validatePayments,VERIFY_INTENT}=await load('lib/verification');
+const verifyRoute=await load('app/api/verify/route'),checkRoute=await load('app/api/checks/[id]/route'),sharedRoute=await load('app/api/shared/[token]/route'),historyRoute=await load('app/api/checks/route'),statsRoute=await load('app/api/stats/route'),exportRoute=await load('app/api/checks/export/route');
+const alice='alice',bob='bob',payer='0x'+'1'.repeat(40),diamond='0x'+'2'.repeat(40),hash='0x'+'ab'.repeat(32),CAPTION='IMAGE_CAPTIONING_GENERAL';
+function database(){
+ const sql=new DatabaseSync(':memory:');for(const file of readdirSync('drizzle').filter(f=>f.endsWith('.sql')).sort())sql.exec(readFileSync(path.join('drizzle',file),'utf8'));
+ const prepare=(query,values=[])=>({bind(...args){return prepare(query,args);},async first(column){const row=sql.prepare(query).get(...values);return row?(column?row[column]:{...row}):null;},async all(){return {results:sql.prepare(query).all(...values).map(r=>({...r}))};},async run(){return sql.prepare(query).run(...values);}});
+ const db={prepare,sql};globalThis.__lensyTestEnvironment.DB=db;return db;
+}
+function quote(intent=VERIFY_INTENT){return {intent,amount:'10000',requestBody:{intent,params:{media_url:'https://example.com/media.jpg'}},escrow:{scheme:'escrow',network:'eip155:11155111',payTo:diamond,extra:{message:'test-only message template'}}};}
+function base(id=crypto.randomUUID()){return {id,name:'media.jpg',media:'https://example.com/media.jpg',mediaType:'image/jpeg',mode:'live',createdAt:new Date().toISOString(),verdict:'Awaiting payment',confidence:null,summary:'',findings:[],receipts:[],cost:'0.000000',status:'quoted'};}
+function seed(db,check,owner=alice,quotes=[quote()]){db.sql.prepare('INSERT INTO checks (id,owner,created_at,name,media,media_type,mode,status,result) VALUES (?,?,?,?,?,?,?,?,?)').run(check.id,owner,check.createdAt,check.name,check.media,check.mediaType,check.mode,check.status,JSON.stringify({...check,quotes}));return check;}
+function payment(q=quote(),overrides={}){const now=Math.floor(Date.now()/1000);return btoa(JSON.stringify({scheme:'escrow',network:q.escrow.network,payload:{signature:'0x'+'1'.repeat(130),authorization:{from:payer,to:diamond,value:q.amount,validAfter:String(now-5),validBefore:String(now+100),nonce:crypto.randomUUID(),...overrides}}}));}
+function request(url,body,owner=alice,method='POST'){return new Request('https://lensy.test'+url,{method,headers:{origin:'https://lensy.test','Content-Type':'application/json',...(owner?{'oai-authenticated-user-id':owner}:{})},...(method==='GET'?{}:{body:JSON.stringify(body)})});}
+const params=id=>({params:Promise.resolve({id})});
+const tokenParams=token=>({params:Promise.resolve({token})});
+function response(intent=VERIFY_INTENT,{cost=true,receipt=true,status=200}={}){const body={intent,result_shape:'intent',result:{verdict:'Likely authentic',confidence:.92,summary:'Provider assessment.',findings:['Consistent detail']},...(cost?{cost_usd:.01}:{})};const raw={receipt_hash:hash,rail:'escrow',payer,miner:'123',intent,amount_uusdc:'10000',epoch_id:314};return {body,res:new Response(JSON.stringify(body),{status,headers:receipt?{'X-PAYMENT-RESPONSE':btoa(JSON.stringify(raw))}:{}})};}
+const body=async r=>{const value=await r.json();return value;};
+
+test('USDC calculations preserve six decimals and large exact values',()=>{
+ assert.equal(toMicros('1000000000000000.000001'),1000000000000000000001n);assert.equal(fromMicros(1000000000000000000001n),'1000000000000000.000001');
+ assert.equal(toMicros(1e-6),1n);assert.equal(toMicros('0.0000001'),null);assert.equal(toMicros(-1),null);assert.equal(toMicros(null),null);
+ assert.deepEqual(totalCosts(['0.010001',null,'0.000009']),{cost:null,knownCost:'0.010010'});assert.equal(formatMoney(null),'Not reported');assert.equal(formatMoney('0'),'$0.000000');
+});
+test('raw answers are not counted as receipts and absent charges stay unknown',()=>{
+ const noReceipt=response(VERIFY_INTENT,{cost:false,receipt:false});const result=readProviderResult(VERIFY_INTENT,noReceipt.res,noReceipt.body,'10000');
+ assert.equal(result.receipt,undefined);assert.equal(result.cost,null);assert.ok(result.response);assert.match(result.warning,/No valid payment receipt/);
+ const known=response(VERIFY_INTENT,{receipt:false});assert.equal(readProviderResult(VERIFY_INTENT,known.res,known.body,'10000').cost,'0.010000');
+});
+test('payment receipts retain exact charges, epoch URLs, and charges on failed responses',()=>{
+ const result=response();const outcome=readProviderResult(VERIFY_INTENT,result.res,result.body,'10000');assert.equal(outcome.receipt.hash,hash);assert.equal(outcome.receipt.amount,'0.010000');assert.ok(outcome.receipt.url.endsWith('/v1/blocks/314/deliveries/'+hash));
+ const failed=response(VERIFY_INTENT,{status:500});const error=readProviderResult(VERIFY_INTENT,failed.res,{error:'failed after payment'},'10000');assert.equal(error.receipt.hash,hash);assert.equal(error.cost,'0.010000');
+});
+test('rejected verdicts and out-of-range confidence never become confident assessments',()=>{
+ const fixture=response();fixture.body.field_status={verdict:'rejected'};fixture.body.result.confidence=1.4;
+ const p=readProviderResult(VERIFY_INTENT,fixture.res,fixture.body,'10000'),check=assembleCheck(base(),[p],true);
+ assert.equal(check.verdict,'No structured verdict');assert.equal(check.confidence,null);
+});
+test('parallel requests persist the first receipt before the other request finishes',async()=>{
+ const db=database(),check={...base(),status:'running',startedAt:new Date().toISOString(),providers:[{intent:VERIFY_INTENT,status:'pending',cost:null},{intent:CAPTION,status:'pending',cost:null}]};seed(db,check);
+ let rejectCaption;const caption=new Promise((_,reject)=>{rejectCaption=reject;});
+ const running=runVerification(db,async(_,options)=>JSON.parse(options.body).intent===VERIFY_INTENT?response():caption,check.id,check,[quote(),quote(CAPTION)],['test-only','test-only']);
+ for(let i=0;i<20;i++){await new Promise(resolve=>setImmediate(resolve));const row=await db.prepare('SELECT result FROM checks WHERE id = ?').bind(check.id).first();if(JSON.parse(row.result).providers[0].receipt)break;}
+ const intermediate=JSON.parse((await db.prepare('SELECT result FROM checks WHERE id = ?').bind(check.id).first()).result);assert.equal(intermediate.providers[0].receipt.hash,hash);assert.equal(intermediate.providers[1].status,'pending');
+ rejectCaption(new Error('network timeout'));const result=await running;
+ assert.equal(result.status,'partial');assert.equal(result.receipts.length,1);assert.equal(result.cost,null);assert.equal(result.knownCost,'0.010000');assert.match(result.warning,/unconfirmed/);
+});
+test('stale requests require review and preserve evidence without an automatic retry',()=>{
+ const fixture=response();const complete=readProviderResult(VERIFY_INTENT,fixture.res,fixture.body,'10000');
+ const result=assembleCheck({...base(),startedAt:new Date(Date.now()-180000).toISOString()},[complete,{intent:CAPTION,status:'pending',cost:null}],false);
+ assert.equal(result.status,'interrupted');assert.equal(result.receipts.length,1);assert.equal(result.cost,null);
+});
+test('authorization validation rejects expired windows, wrong amounts and reused nonces',()=>{
+ assert.throws(()=>validatePayments([payment(quote(),{validBefore:'1'})],[quote()]),/expired/);
+ assert.throws(()=>validatePayments([payment(quote(),{value:'1'})],[quote()]),/match/);
+ assert.throws(()=>validatePayments([payment(quote(),{nonce:'same'}),payment(quote(CAPTION),{nonce:'same'})],[quote(),quote(CAPTION)]),/unique/);
+ assert.throws(()=>validatePayments([],[quote()]),/Sign every/);
+});
+test('an expired quote never reaches the provider and an unpaid quote cannot be shared',async t=>{
+ const db=database(),check=seed(db,{...base(),createdAt:new Date(Date.now()-180000).toISOString()});const original=globalThis.fetch;let calls=0;globalThis.fetch=async()=>{calls++;throw new Error('Unexpected network purchase');};t.after(()=>globalThis.fetch=original);
+ const response=await verifyRoute.POST(request('/api/verify',{id:check.id,payments:[payment()]}));assert.equal(response.status,400);assert.equal(calls,0);
+ assert.equal((await checkRoute.PATCH(request('/api/checks/'+check.id,{listed:true},alice,'PATCH'),params(check.id))).status,403);
+ assert.equal((await checkRoute.GET(request('/api/checks/'+check.id,null,alice,'GET'),params(check.id))).status,404);
+});
+test('failed authorization is a known zero charge, but a connection loss is not',()=>{
+ const rejected=readProviderResult(VERIFY_INTENT,new Response('{}',{status:402}),{reason:'insufficient escrow'},'10000');assert.equal(rejected.status,'failed');assert.equal(rejected.cost,'0.000000');
+ const result=assembleCheck(base(),[{intent:VERIFY_INTENT,status:'unknown',cost:null,error:'connection lost'}],true);assert.equal(result.status,'interrupted');assert.equal(result.cost,null);assert.equal(result.knownCost,'0.000000');
+});
+test('concurrent duplicate submissions make exactly one paid provider request',async t=>{
+ const db=database(),check=seed(db,base());const original=globalThis.fetch;let calls=0,release;
+ const hold=new Promise(resolve=>{release=resolve;});globalThis.fetch=async()=>{calls++;await hold;const fixture=response();return fixture.res;};t.after(()=>globalThis.fetch=original);
+ const signed=payment(),first=verifyRoute.POST(request('/api/verify',{id:check.id,payments:[signed]}));
+ while(calls===0)await new Promise(resolve=>setImmediate(resolve));
+ const duplicate=await verifyRoute.POST(request('/api/verify',{id:check.id,payments:[signed]}));assert.equal(duplicate.status,202);assert.equal(calls,1);
+ release();const completed=await body(await first);assert.equal(completed.check.status,'complete');assert.equal(completed.check.receipts.length,1);
+ const again=await body(await verifyRoute.POST(request('/api/verify',{id:check.id,payments:[signed]})));assert.equal(again.alreadySubmitted,true);assert.equal(calls,1);
+ const stored=(await db.prepare('SELECT result FROM checks WHERE id = ?').bind(check.id).first()).result;assert.ok(!stored.includes(signed));assert.ok(!stored.includes('quotes'));
+});
+test('an unreadable network response cannot discard its payment receipt',async t=>{
+ const db=database(),check=seed(db,base()),original=globalThis.fetch;globalThis.fetch=async()=>new Response('<not-json>',{headers:{'X-PAYMENT-RESPONSE':btoa(JSON.stringify({receipt_hash:hash,intent:VERIFY_INTENT,amount_uusdc:'10000',epoch_id:314}))}});t.after(()=>globalThis.fetch=original);
+ const result=await body(await verifyRoute.POST(request('/api/verify',{id:check.id,payments:[payment()]})));
+ assert.equal(result.check.receipts.length,1);assert.equal(result.check.cost,'0.010000');assert.equal(result.check.status,'failed');assert.match(result.check.warning,/unreadable/);
+});
+test('sharing is owner-only, revocation removes feed entries and old links stay revoked',async()=>{
+ const db=database(),fixture=response(),complete=assembleCheck(base(),[readProviderResult(VERIFY_INTENT,fixture.res,fixture.body,'10000')],true);seed(db,complete);
+ assert.equal((await checkRoute.GET(request('/api/checks/'+complete.id,null,bob,'GET'),params(complete.id))).status,404);
+ assert.equal((await checkRoute.PATCH(request('/api/checks/'+complete.id,{listed:true},bob,'PATCH'),params(complete.id))).status,403);
+ const shared=await body(await checkRoute.PATCH(request('/api/checks/'+complete.id,{listed:true},alice,'PATCH'),params(complete.id)));const firstToken=shared.url.split('/').pop();assert.notEqual(firstToken,complete.id);
+ assert.equal((await sharedRoute.GET(request('/api/shared/'+firstToken,null,null,'GET'),tokenParams(firstToken))).status,200);
+ assert.equal((await body(await historyRoute.GET(request('/api/checks?feed=1',null,null,'GET')))).checks.length,1);
+ await checkRoute.PATCH(request('/api/checks/'+complete.id,{shared:false},alice,'PATCH'),params(complete.id));
+ assert.equal((await sharedRoute.GET(request('/api/shared/'+firstToken,null,null,'GET'),tokenParams(firstToken))).status,404);
+ assert.equal((await body(await historyRoute.GET(request('/api/checks?feed=1',null,null,'GET')))).checks.length,0);
+ const reshared=await body(await checkRoute.PATCH(request('/api/checks/'+complete.id,{listed:false},alice,'PATCH'),params(complete.id)));assert.notEqual(reshared.url,shared.url);
+ assert.equal((await sharedRoute.GET(request('/api/shared/'+firstToken,null,null,'GET'),tokenParams(firstToken))).status,404);
+});
+test('simultaneous sharing requests keep the same active link',async()=>{
+ const db=database(),fixture=response(),check=assembleCheck(base(),[readProviderResult(VERIFY_INTENT,fixture.res,fixture.body,'10000')],true);seed(db,check);
+ const results=await Promise.all([true,false].map(listed=>checkRoute.PATCH(request('/api/checks/'+check.id,{listed},alice,'PATCH'),params(check.id)).then(body)));
+ assert.equal(results[0].url,results[1].url);
+});
+test('history pagination, export, and exact statistics stay scoped to the owner',async()=>{
+ const db=database();for(let i=0;i<53;i++)seed(db,{...base(),status:'complete',cost:'0.010001',knownCost:'0.010001'});
+ seed(db,{...base(),status:'complete',cost:'999.000000'},bob);seed(db,{...base(),status:'failed',cost:null,knownCost:'0.000003'});
+ const first=await body(await historyRoute.GET(request('/api/checks',null,alice,'GET')));assert.equal(first.checks.length,50);assert.ok(first.nextCursor);
+ const second=await body(await historyRoute.GET(request('/api/checks?cursor='+encodeURIComponent(first.nextCursor),null,alice,'GET')));assert.equal(second.checks.length,4);assert.equal(new Set([...first.checks,...second.checks].map(c=>c.id)).size,54);
+ const stats=await body(await statsRoute.GET(request('/api/stats',null,alice,'GET')));assert.equal(stats.checks,54);assert.equal(stats.knownSpend,'0.530056');assert.equal(stats.unconfirmed,1);
+ const exported=await body(await exportRoute.GET(request('/api/checks/export',null,alice,'GET')));assert.equal(exported.checks.length,54);assert.ok(exported.checks.every(c=>!('quotes'in c)&&!('owner'in c)));
+});
+test('storage failures return the available evidence and a download warning',async()=>{
+ const db=database(),check={...base(),status:'running'};seed(db,check);const broken={prepare(){return {bind(){return {async run(){throw new Error('storage unavailable');}};}};}};
+ const result=await runVerification(broken,async()=>response(),check.id,check,[quote()],['test-only']);assert.equal(result.receipts.length,1);assert.equal(result.persistenceWarning,true);assert.match(result.warning,/Download/);
+});

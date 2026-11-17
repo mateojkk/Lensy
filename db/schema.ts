@@ -12,4 +12,5 @@ export const checks = sqliteTable("checks", {
   result: text("result").notNull(),
   shared: integer("shared").notNull().default(0),
   listed: integer("listed").notNull().default(0),
+  shareToken: text("share_token"),
 }, t => [index("checks_owner_idx").on(t.owner), index("checks_feed_idx").on(t.listed)]);

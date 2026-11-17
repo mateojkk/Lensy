@@ -1,0 +1,1 @@
+ALTER TABLE `checks` ADD `share_token` text;

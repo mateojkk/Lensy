@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import "./landing.css";
+import "./workflow.css";
 
 export const metadata: Metadata = {
   title: "Lensy — See the whole picture",

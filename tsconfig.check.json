@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {"incremental":false},
+  "include": ["cloudflare-env.d.ts","vite-env.d.ts","lib/**/*.ts","app/api/**/*.ts","app/workspace.tsx","app/components/**/*.tsx","db/**/*.ts"],
+  "exclude": ["node_modules","dist",".sites-runtime","outputs"]
+}

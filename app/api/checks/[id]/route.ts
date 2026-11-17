@@ -1,8 +1,15 @@
-import { db, findCheck, json, requireOwner, route } from "../../../../lib/server";
-export async function GET(req:Request,{params}:{params:Promise<{id:string}>}) { return route(req,async()=>{ const {id}=await params; const check=await findCheck(id,req); return check?json({check}):json({error:"This result isn't available or hasn't been shared."},404); }); }
-export async function PATCH(req:Request,{params}:{params:Promise<{id:string}>}) { return route(req,async()=>{
-  const {id}=await params; const data=await req.json() as any;
-  const changed=await db().prepare("UPDATE checks SET shared = 1, listed = ? WHERE id = ? AND owner = ? AND mode = 'live' AND status = 'complete' RETURNING id").bind(data.listed===true?1:0,id,requireOwner(req)).first();
-  if(!changed) return json({error:"Only your completed live checks can be shared."},403);
-  return json({check:await findCheck(id,req),url:"/s/"+id});
-}); }
+﻿import { db, findCheck, fromRow, json, requireOwner, route } from '../../../../lib/server';
+export async function GET(req:Request,{params}:{params:Promise<{id:string}>}){return route(req,async()=>{const {id}=await params;const check=await findCheck(id,req);return check?json({check}):json({error:'Result not found in your workspace.'},404);});}
+export async function PATCH(req:Request,{params}:{params:Promise<{id:string}>}){return route(req,async()=>{
+  const {id}=await params,owner=requireOwner(req),data=await req.json() as {shared?:boolean;listed?:boolean};
+  const database=db(),row=await database.prepare("SELECT * FROM checks WHERE id = ? AND owner = ? AND mode = 'live'").bind(id,owner).first();
+  if(!row)return json({error:'You can only change sharing for your own checks.'},403);
+  const shared=data.shared!==false;
+  if(shared&&!['complete','partial'].includes(String(row.status)))return json({error:'Only completed checks can be shared.'},403);
+  const token=shared?(row.shared&&row.share_token?String(row.share_token):crypto.randomUUID()):null;
+  const listed=shared&&data.listed===true;
+  const updated=await database.prepare('UPDATE checks SET share_token = CASE WHEN ? = 0 THEN NULL WHEN shared = 1 AND share_token IS NOT NULL THEN share_token ELSE ? END, shared = ?, listed = ? WHERE id = ? AND owner = ? RETURNING *').bind(shared?1:0,token,shared?1:0,listed?1:0,id,owner).first();
+  if(!updated)return json({error:'Check not found.'},404);
+  const check=fromRow(updated,owner);
+  return json({check,url:check.shareUrl});
+});}

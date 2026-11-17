@@ -38,13 +38,13 @@ const disabled=await request('/api/checks',post({url:'https://example.com/a.jpg'
 const badURL=await request('/api/quote',post({url:'http://127.0.0.1/private'}));assert.equal(badURL.response.status,400);
 const forged=await request('/api/quote',{...post({url:'https://example.com/a.jpg'}),headers:{'Content-Type':'application/json',origin:'https://other.example'}});assert.equal(forged.response.status,403);
 assert.equal((await request('/api/checks/sample-coast')).response.status,404,'Hard-coded results are removed');
-const feed=await request('/api/checks?feed=1');assert.equal(feed.response.status,200);assert.ok(feed.data.checks.every(c=>c.mode==='live'&&c.status==='complete'));
+const feed=await request('/api/checks?feed=1');assert.equal(feed.response.status,200);assert.ok(feed.data.checks.every(c=>c.mode==='live'&&['complete','partial'].includes(c.status)));
 console.log('PASS: live-only records, removed simulated creation, URL validation, removed sample results, and cross-origin write protection.');
 
 const quote=await request('/api/quote',post({url:'https://images.unsplash.com/photo-1473116763249-2faaef81ccda',caption:false}));
 assert.equal(quote.response.status,200,JSON.stringify(quote.data));
 assert.equal(quote.data.quotes.length,1);assert.equal(quote.data.quotes[0].intent,'MEDIA_FORENSIC_VERIFY_GENERAL');
-const q=quote.data.quotes[0];assert.equal(q.escrow.scheme,'escrow');assert.match(q.amount,/^\d+$/);assert.equal(quote.data.total,(Number(q.amount)/1e6).toFixed(6));
+const q=quote.data.quotes[0];assert.equal(q.escrow.scheme,'escrow');assert.match(q.amount,/^\d+$/);const micros=BigInt(q.amount);assert.equal(quote.data.total,`${micros/1000000n}.${String(micros%1000000n).padStart(6,'0')}`);assert.ok(Date.parse(quote.data.expiresAt)>Date.now());
 assert.equal((await request('/api/checks/'+quote.data.id)).response.status,404,'An unpaid quote is not a verification result');
 assert.ok(!(await request('/api/checks')).data.checks.some(c=>c.id===quote.data.id),'Unpaid quotes are excluded from history');
 assert.equal((await request('/api/verify',post({id:quote.data.id,payments:[]}))).response.status,400);

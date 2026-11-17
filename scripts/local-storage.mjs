@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root=fileURLToPath(new URL('../',import.meta.url));
-const directory=path.join(root,'.sites-runtime','local');
+const directory=process.env.LENSY_DATA_DIRECTORY?path.resolve(process.env.LENSY_DATA_DIRECTORY):path.join(root,'.sites-runtime','local');
 mkdirSync(directory,{recursive:true});
 const database=new DatabaseSync(path.join(directory,'lensy.sqlite'));
 database.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;');
