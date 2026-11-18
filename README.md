@@ -2,7 +2,7 @@
 
 Live media verification with visible prices, original network responses, and shareable receipts. Built with React, TypeScript, Vinext, Cloudflare D1, and R2.
 
-Every check requests a real Telegraph quote. A funded Ethereum Sepolia wallet signs the exact escrow payment before any paid request is sent. The app has no simulated verification mode or hard-coded verdicts. Previous simulated records are retained in storage but excluded from results, history, sharing, media access, and the community feed.
+Checks default to Lensy-funded account payments: users need no wallet or deposit. The owner funds one Telegraph account and configures a server-only API key. The optional “Pay with my wallet” flow still requests an exact quote and a Sepolia escrow signature. The app has no simulated verification mode or hard-coded verdicts. Previous simulated records are retained in storage but excluded from results, history, sharing, media access, and the community feed.
 
 The landing page is at `/`, the verification workspace is at `/app`, private saved results are at `/app/checks/:id`, and shared results are at `/s/:token`. The interface uses black, white, and brown with locally hosted Geist Light, Regular, and Medium (300–500). The Geist font license is included in `public/fonts/OFL.txt`.
 
@@ -11,8 +11,8 @@ The header's moon/sun button switches between dark and light mode on both the la
 ## Use
 
 1. Paste a direct public HTTPS image or video URL.
-2. Request an exact network quote.
-3. Connect your Ethereum wallet and approve the quoted payment.
+2. Choose **Check media** for a Lensy-funded check (requires owner setup below).
+3. Optionally choose **Pay with my wallet** to review and sign an exact escrow quote instead.
 4. Read the actual provider response, reported confidence, cost, and original receipt.
 5. Share the stored completed check; opening it never purchases another check.
 
@@ -23,6 +23,21 @@ Payments use Telegraph escrow on Ethereum Sepolia. Fund your wallet's escrow fol
 The backend discovers current schemas for `MEDIA_FORENSIC_VERIFY_GENERAL` and optional `IMAGE_CAPTIONING_GENERAL`, then reads an unsigned 402 quote. Each approval signs the network's exact EIP-191 message template with a fresh nonce and validity window under two minutes. Verification and captioning run in parallel. A database transition prevents submitting a quote twice. Missing or unstructured fields do not become invented verdicts or confidence scores. Failed verification remains a failed check even if optional captioning succeeds.
 
 Raw receipts are stored with their result. Epoch proof links use real receipt hashes and epoch IDs. Final proofs may not exist until the epoch settles. If the connection fails after payment, inspect the saved check and network ledger before creating another purchase; the app does not automatically retry purchases.
+
+## Activate Lensy-funded checks
+
+1. Sign into [Anjoman](https://anjoman.ai), deposit test tokens into the Lensy account, and confirm its Available balance. Test tokens are available from the [faucet](https://anjoman.ai/dashboard/faucet).
+2. Create a dedicated server key at [API keys](https://anjoman.ai/dashboard/api-keys).
+3. Locally run `npm.cmd run sponsor:setup`. It accepts the key with hidden input, validates it through a read-only balance request, and saves it in ignored `.env.local`. Restart `npm.cmd run local`. Alternatively copy `.env.example` to `.env.local` and set the server key there.
+4. For hosting, set `TELEGRAPH_API_KEY` as a secret Site runtime environment variable. Local environment files are never published. No key is included in the repository, browser bundle, API config, or reports.
+
+Until a key is configured, the app clearly marks Lensy-funded checks unavailable; it never substitutes a simulated result or silently charges a user's wallet. The API key cannot deposit funds, so the owner must perform the one-time deposit. See [Telegraph's account API guide](https://anjoman.ai/docs/using/api-keys).
+
+Server defaults: maximum 0.05 test USDC per provider call, 1 test USDC of reserved allowances per UTC day, 3 checks per workspace identity per day, and 2 active checks globally. Optional captioning reserves two calls. Override the named limits in `.env.example`; `LENSY_SPONSOR_ENABLED=false` disables new sponsored purchases. Daily reservations conservatively count the full maximum even if actual charges are lower or unknown. They are not a statement of actual spending. Cookie identities can be reset; the shared daily cap remains authoritative.
+
+The server checks available balance and debt, reads unsigned provider prices, atomically reserves its budget, and saves the check before starting any paid job. It uses fixed direct intents through `POST /agent/chat` with a server-controlled `maxSpendUsd`. It saves the SSE job ID immediately, then uses read-only `GET /agent/jobs/:id` polling, limited to once per check every ten seconds. Refreshes and duplicate check IDs never resubmit a paid job. Missing job IDs or uncertain connections require ledger review. A running slot expires after fifteen minutes, but its daily spending reservation stays counted.
+
+Results show **Covered by Lensy** and the account API's reported network cost. The account API may return prose instead of structured intent fields and may omit payment receipts. Lensy preserves that response, shows confidence only when explicitly returned in valid structured fields, and never manufactures a verdict, charge, or receipt. A paid account request has not been exercised without the owner's funded key.
 
 ## Request recovery and evidence
 

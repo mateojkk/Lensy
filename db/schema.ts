@@ -14,3 +14,12 @@ export const checks = sqliteTable("checks", {
   listed: integer("listed").notNull().default(0),
   shareToken: text("share_token"),
 }, t => [index("checks_owner_idx").on(t.owner), index("checks_feed_idx").on(t.listed)]);
+
+// Reservations stay charged against the allowance even after a connection is lost.
+export const sponsorships = sqliteTable('sponsorships', {
+  checkId:text('check_id').primaryKey(),
+  owner:text('owner').notNull(),
+  day:text('day').notNull(),
+  reservedMicros:integer('reserved_micros').notNull(),
+  activeUntil:integer('active_until').notNull(),
+},t=>[index('sponsorships_day_idx').on(t.day),index('sponsorships_owner_day_idx').on(t.owner,t.day)]);

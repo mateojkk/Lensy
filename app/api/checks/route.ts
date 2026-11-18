@@ -12,8 +12,8 @@ export async function GET(req:Request){return route(req,async()=>{
  if(query){where+=" AND (name LIKE ? ESCAPE '\\' OR media LIKE ? ESCAPE '\\' OR json_extract(result,'$.verdict') LIKE ? ESCAPE '\\')";const pattern='%'+query.replace(/[\\%_]/g,c=>'\\'+c)+'%';values.push(pattern,pattern,pattern);}
  if(status!=='all'){
   // Match the recovery status rendered by fromRow for stale in-flight requests.
-  const cutoff=new Date(Date.now()-120000).toISOString();
-  const stale="(status = 'running' AND json_type(result,'$.providers') = 'array' AND COALESCE(json_extract(result,'$.startedAt'),created_at) < ?)";
+  const cutoff=Date.now();
+  const stale="(status = 'running' AND json_type(result,'$.providers') = 'array' AND (julianday(COALESCE(json_extract(result,'$.startedAt'),created_at))-2440587.5)*86400000 < ? - CASE WHEN json_extract(result,'$.paymentSource') = 'lensy' THEN 900000 ELSE 120000 END)";
   if(status==='interrupted'){where+=` AND (status = 'interrupted' OR ${stale})`;values.push(cutoff);}
   else if(status==='running'){where+=` AND status = 'running' AND NOT COALESCE(${stale},0)`;values.push(cutoff);}
   else{where+=' AND status = ?';values.push(status);}

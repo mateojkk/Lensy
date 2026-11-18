@@ -29,6 +29,12 @@ function statement(sql,values=[]){
   };
 }
 export const bindings={
+ get TELEGRAPH_API_KEY(){return process.env.TELEGRAPH_API_KEY;},
+ get LENSY_SPONSOR_ENABLED(){return process.env.LENSY_SPONSOR_ENABLED;},
+ get LENSY_SPONSOR_MAX_CALL_USDC(){return process.env.LENSY_SPONSOR_MAX_CALL_USDC;},
+ get LENSY_SPONSOR_DAILY_USDC(){return process.env.LENSY_SPONSOR_DAILY_USDC;},
+ get LENSY_SPONSOR_CHECKS_PER_USER(){return process.env.LENSY_SPONSOR_CHECKS_PER_USER;},
+
   DB:{prepare:statement},
   BUCKET:{async get(id){
     if(!/^[a-f0-9-]{36}$/.test(id))return null;

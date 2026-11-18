@@ -157,3 +157,84 @@ test('storage failures return the available evidence and a download warning',asy
  const db=database(),check={...base(),status:'running'};seed(db,check);const broken={prepare(){return {bind(){return {async run(){throw new Error('storage unavailable');}};}};}};
  const result=await runVerification(broken,async()=>response(),check.id,check,[quote()],['test-only']);assert.equal(result.receipts.length,1);assert.equal(result.persistenceWarning,true);assert.match(result.warning,/Download/);
 });
+
+const sponsorRoute=await load('app/api/sponsored/route'),configRoute=await load('app/api/config/route');
+const {sponsorConfig,sponsoredOutcome}=await load('lib/sponsored');
+function sponsorFixture(t,options={}){
+ const db=database(),env=globalThis.__lensyTestEnvironment,original=globalThis.fetch;
+ Object.assign(env,{TELEGRAPH_API_KEY:'anjoman_test_only_key',LENSY_SPONSOR_ENABLED:'true',LENSY_SPONSOR_MAX_CALL_USDC:'.05',LENSY_SPONSOR_DAILY_USDC:'1',LENSY_SPONSOR_CHECKS_PER_USER:'3'});
+ // Exact decimal parsing deliberately rejects a missing leading zero.
+ env.LENSY_SPONSOR_MAX_CALL_USDC='0.05';
+ const calls=[];let paid=0;
+ globalThis.fetch=async(url,init={})=>{
+  const parsed=new URL(url),method=init.method||'GET';calls.push({url:String(url),method,init});
+  if(parsed.hostname==='backend.telegraphprotocol.com'){
+   assert.equal(init.headers.Authorization,'Bearer '+env.TELEGRAPH_API_KEY);
+   if(parsed.pathname==='/engine/escrow/balance')return Response.json({effectiveBalance:options.balance??'5',agentDebt:options.debt??'0'},{status:options.balanceStatus??200});
+   if(parsed.pathname==='/agent/chat'){
+    paid++;const value=JSON.parse(init.body);assert.ok([VERIFY_INTENT,CAPTION].includes(value.intent));assert.equal(value.maxSpendUsd,.05);assert.ok(!('paymentMethod'in value));assert.ok(value.params);assert.equal(db.sql.prepare('SELECT count(*) AS n FROM checks WHERE status = ?').get('running').n>0,true,'Saved before purchase');
+    if(options.lost)throw new Error('Connection lost');
+    if(options.direct)return Response.json({status:'complete',answer:'Network response',costUsd:.01,jobId:'direct-job'});
+    const data=new TextEncoder().encode('event: conversation\r\ndata: {"conversationId":"test"}\r\n\r\nevent: job\r\ndata: {"jobId":"job-'+paid+'"}\r\n\r\n');let offset=0;
+    return new Response(new ReadableStream({pull(controller){if(offset>=data.length){controller.close();return;}controller.enqueue(data.slice(offset,offset+=7));}}),{headers:{'content-type':'text/event-stream'}});
+   }
+   if(parsed.pathname.startsWith('/agent/jobs/'))return Response.json({status:'complete',answer:JSON.stringify({verdict:'Likely authentic',confidence:.8,summary:'Network assessment',findings:['Reported finding']}),costUsd:.01});
+   throw new Error('Unexpected account endpoint');
+  }
+  assert.equal(parsed.hostname,'devnode.telegraphprotocol.com');assert.ok(!init.headers?.Authorization,'No key sent to the node');
+  if(parsed.pathname.includes('/intents/'))return Response.json({miner_count:1,request:{params:[{name:'media_url'}]}});
+  assert.equal(parsed.pathname,'/engine/v1/ask');assert.ok(!init.headers?.['X-PAYMENT'],'Unsigned discovery only');
+  const intent=JSON.parse(init.body).intent;return Response.json({accepts:[{...quote(intent).escrow,extra:{message:'Amount: '+(options.price??'10000')+' uUSDC'}}]},{status:402});
+ };
+ t.after(()=>{globalThis.fetch=original;for(const key of Object.keys(env))if(key!=='DB')delete env[key];});
+ return {db,calls,env,get paid(){return paid;},run:(id=crypto.randomUUID(),owner=alice,caption=false)=>sponsorRoute.POST(request('/api/sponsored',{id,url:'https://example.com/media.jpg',caption,maxSpendUsd:999,intent:'FORGED'},owner))};
+}
+test('sponsored configuration never exposes the key and no-key checks never purchase',async t=>{
+ const f=sponsorFixture(t);delete f.env.TELEGRAPH_API_KEY;
+ const config=await body(await configRoute.GET(request('/api/config',null,alice,'GET')));assert.equal(config.sponsored.available,false);assert.ok(!JSON.stringify(config).includes('anjoman_'));
+ assert.equal((await f.run()).status,503);assert.equal(f.calls.length,0);
+ f.env.TELEGRAPH_API_KEY='anjoman_test_only_key';f.env.LENSY_SPONSOR_DAILY_USDC='invalid';assert.equal(sponsorConfig().available,false);assert.equal((await f.run()).status,503);assert.equal(f.paid,0);
+});
+test('sponsored balance, debt, and quote limits fail before a paid request',async t=>{
+ for(const options of [{balance:'0'},{debt:'0.001'},{balanceStatus:401},{price:'50001'}])await t.test(JSON.stringify(options),async child=>{const f=sponsorFixture(child,options);assert.equal((await f.run()).status,503);assert.equal(f.paid,0);assert.equal(f.db.sql.prepare('SELECT COUNT(*) AS n FROM sponsorships').get().n,0);});
+});
+test('sponsored jobs are durable, idempotent, owner-only, and polled without another purchase',async t=>{
+ const f=sponsorFixture(t),id=crypto.randomUUID();const first=await body(await f.run(id,alice,true));assert.equal(first.check.paymentSource,'lensy');assert.equal(first.check.status,'running');assert.equal(first.check.providers.length,2);assert.equal(f.paid,2);assert.ok(first.check.providers.every(p=>p.jobId));
+ assert.equal((await f.run(id)).status,200);assert.equal(f.paid,2);assert.equal((await f.run(id,bob)).status,409);
+ assert.equal((await checkRoute.GET(request('/api/checks/'+id,null,bob,'GET'),params(id))).status,404);
+ const final=await body(await checkRoute.GET(request('/api/checks/'+id,null,alice,'GET'),params(id)));assert.equal(final.check.status,'complete');assert.equal(final.check.cost,'0.020000');assert.equal(final.check.receipts.length,0);assert.equal(final.check.verdict,'Likely authentic');assert.equal(final.check.viewerIsOwner,true);assert.equal(f.paid,2);assert.equal(f.db.sql.prepare('SELECT active_until FROM sponsorships').get().active_until,0);
+ assert.ok(!JSON.stringify(final).includes(f.env.TELEGRAPH_API_KEY));
+});
+test('concurrent sponsorship reservations enforce one purchase, global budget and owner allowance',async t=>{
+ const f=sponsorFixture(t,{direct:true}),id=crypto.randomUUID();const duplicate=await Promise.all([f.run(id),f.run(id)]);assert.equal(f.paid,1);assert.ok(duplicate.some(r=>r.status===200));
+ f.env.LENSY_SPONSOR_CHECKS_PER_USER='1';assert.equal((await f.run()).status,429);assert.equal(f.paid,1);
+ f.env.LENSY_SPONSOR_DAILY_USDC='0.1';await Promise.all([f.run(crypto.randomUUID(),bob),f.run(crypto.randomUUID(),'carol')]);assert.equal(f.paid,2);assert.equal(f.db.sql.prepare('SELECT SUM(reserved_micros) AS n FROM sponsorships').get().n,100000);
+});
+test('active sponsored jobs throttle polling and bound concurrency',async t=>{
+ const f=sponsorFixture(t);await f.run();await f.run(crypto.randomUUID(),bob);assert.equal((await f.run(crypto.randomUUID(),'carol')).status,429);assert.equal(f.paid,2);
+ const id=f.db.sql.prepare('SELECT id FROM checks WHERE owner = ?').get(alice).id;
+ const original=globalThis.fetch;globalThis.fetch=async(url,init)=>String(url).includes('/agent/jobs/')?(f.calls.push({url:String(url),method:'GET'}),Response.json({status:'running',jobId:'job-1',costUsd:null})):original(url,init);
+ await Promise.all([checkRoute.GET(request('/api/checks/'+id,null,alice,'GET'),params(id)),checkRoute.GET(request('/api/checks/'+id,null,alice,'GET'),params(id))]);await checkRoute.GET(request('/api/checks/'+id,null,alice,'GET'),params(id));assert.equal(f.calls.filter(c=>c.url.includes('/agent/jobs/')).length,1);assert.equal(f.paid,2);
+});
+test('lost sponsored startup retains unknown charges and cannot purchase the same ID twice',async t=>{
+ const f=sponsorFixture(t,{lost:true}),id=crypto.randomUUID();const result=await body(await f.run(id));assert.equal(result.check.status,'interrupted');assert.equal(result.check.cost,null);assert.equal(result.check.receipts.length,0);assert.equal(f.paid,1);await f.run(id);await checkRoute.GET(request('/api/checks/'+id,null,alice,'GET'),params(id));assert.equal(f.paid,1);assert.equal(f.db.sql.prepare('SELECT reserved_micros FROM sponsorships').get().reserved_micros,50000);
+});
+test('sponsored reports retain actual receipts, redact secrets and reject invalid structured fields',()=>{
+ const raw=response(),key='anjoman_example';const outcome=sponsoredOutcome(VERIFY_INTENT,raw.res,{status:'complete',costUsd:.02,answer:JSON.stringify({result_shape:'intent',field_status:{verdict:'rejected'},result:{verdict:'Authentic',confidence:2,summary:key}})},key);
+ assert.equal(outcome.cost,'0.010000');assert.equal(outcome.receipt.hash,hash);assert.ok(!JSON.stringify(outcome).includes(key));const check=assembleCheck({...base(),paymentSource:'lensy'},[outcome],true);assert.equal(check.verdict,'No structured verdict');assert.equal(check.confidence,null);
+ const prose=sponsoredOutcome(VERIFY_INTENT,new Response(),{status:'complete',answer:'Authentic with 99% confidence',costUsd:null});const report=assembleCheck(base(),[prose],true);assert.equal(report.verdict,'No structured verdict');assert.equal(report.confidence,null);assert.equal(report.cost,null);
+});
+
+test('sponsored report storage errors preserve the returned charge and recovery warning',async t=>{
+ const f=sponsorFixture(t,{direct:true}),prepare=f.db.prepare;let purchasesStarted=false;
+ const upstream=globalThis.fetch;globalThis.fetch=async(url,options)=>{const result=await upstream(url,options);if(String(url).endsWith('/agent/chat'))purchasesStarted=true;return result;};
+ f.db.prepare=sql=>{if(purchasesStarted&&sql.startsWith('UPDATE checks'))return {bind(){return this;},async run(){throw new Error('Storage unavailable');}};return prepare(sql);};
+ const result=await body(await f.run());assert.equal(f.paid,1);assert.equal(result.check.cost,'0.010000');assert.equal(result.check.persistenceWarning,true);assert.match(result.check.warning,/Download it now/);assert.equal(result.check.canShare,false);
+});
+test('sponsored ownership, invalid inputs, and same-origin checks reject before purchase',async t=>{
+ const f=sponsorFixture(t);
+ assert.equal((await sponsorRoute.POST(request('/api/sponsored',{id:crypto.randomUUID(),url:'https://example.com/a.jpg',caption:false},null))).status,400);
+ assert.equal((await sponsorRoute.POST(new Request('https://lensy.test/api/sponsored',{method:'POST',headers:{origin:'https://elsewhere.test'},body:'{}'}))).status,403);
+ assert.equal((await sponsorRoute.POST(request('/api/sponsored',{id:'not-valid',url:'https://example.com/a.jpg',caption:false}))).status,400);
+ assert.equal((await sponsorRoute.POST(request('/api/sponsored',{id:crypto.randomUUID(),url:'https://127.0.0.1/a.jpg',caption:false}))).status,400);assert.equal(f.paid,0);assert.equal(f.calls.length,0);
+});

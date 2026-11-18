@@ -1,5 +1,6 @@
-﻿import { db, findCheck, fromRow, json, requireOwner, route } from '../../../../lib/server';
-export async function GET(req:Request,{params}:{params:Promise<{id:string}>}){return route(req,async()=>{const {id}=await params;const check=await findCheck(id,req);return check?json({check}):json({error:'Result not found in your workspace.'},404);});}
+﻿import { db, identity, fromRow, json, requireOwner, route } from '../../../../lib/server';
+import {refreshSponsored} from '../../../../lib/sponsored';
+export async function GET(req:Request,{params}:{params:Promise<{id:string}>}){return route(req,async()=>{const {id}=await params,owner=identity(req);const check=owner?await refreshSponsored(id,owner):null;return check?json({check}):json({error:'Result not found in your workspace.'},404);});}
 export async function PATCH(req:Request,{params}:{params:Promise<{id:string}>}){return route(req,async()=>{
   const {id}=await params,owner=requireOwner(req),data=await req.json() as {shared?:boolean;listed?:boolean};
   const database=db(),row=await database.prepare("SELECT * FROM checks WHERE id = ? AND owner = ? AND mode = 'live'").bind(id,owner).first();

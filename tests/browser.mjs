@@ -16,7 +16,7 @@ const receipt={receipt_hash:hash,rail:'escrow',payer,intent:VERIFY_INTENT,amount
 const response=new Response(JSON.stringify(networkResponse),{headers:{'X-PAYMENT-RESPONSE':btoa(JSON.stringify(receipt))}});
 const check=assembleCheck({id,name:'browser-check.jpg',media:'https://example.com/media.jpg',mediaType:'image/jpeg',mode:'live',createdAt:new Date().toISOString(),status:'complete',verdict:'',confidence:null,summary:'',findings:[],receipts:[],cost:null},[readProviderResult(VERIFY_INTENT,response,networkResponse,'10000')],true);
 await storage.bindings.DB.prepare('INSERT INTO checks (id,owner,created_at,name,media,media_type,mode,status,result) VALUES (?,?,?,?,?,?,?,?,?)').bind(id,owner,check.createdAt,check.name,check.media,check.mediaType,'live','complete',JSON.stringify(check)).run();
-let logs='';const server=spawn(process.execPath,['scripts/run-local.mjs'],{cwd:root,env:{...process.env,LENSY_PORT:String(port)},stdio:['ignore','pipe','pipe'],windowsHide:true});
+let logs='';const server=spawn(process.execPath,['scripts/run-local.mjs'],{cwd:root,env:{...process.env,LENSY_PORT:String(port),LENSY_SPONSOR_ENABLED:'false'},stdio:['ignore','pipe','pipe'],windowsHide:true});
 server.stdout.on('data',data=>logs+=data);server.stderr.on('data',data=>logs+=data);
  let browser;
 try{
@@ -28,10 +28,18 @@ try{
  const page=await context.newPage(),errors=[];let purchases=0;
  page.on('pageerror',error=>{errors.push(error.message);console.error('Browser page error:',error.message);});page.on('request',r=>{if(r.url().includes('/api/verify'))purchases++;});
  await page.addInitScript(()=>{
-  const listeners={};window.__testWalletListeners=listeners;
-  window.ethereum={request:async({method})=>method==='eth_accounts'?[]:method==='eth_requestAccounts'?['0x'+'1'.repeat(40)]:method==='eth_chainId'?'0xaa36a7':method==='wallet_switchEthereumChain'?null:Promise.reject(new Error('Signing is disabled in browser tests.')),on:(name,listener)=>listeners[name]=listener,removeListener:(name)=>delete listeners[name]};
+  const listeners={};window.__testWalletListeners=listeners;window.__walletRequests=[];
+  window.ethereum={request:async({method})=>(window.__walletRequests.push(method),method==='eth_accounts'?[]:method==='eth_requestAccounts'?['0x'+'1'.repeat(40)]:method==='eth_chainId'?'0xaa36a7':method==='wallet_switchEthereumChain'?null:Promise.reject(new Error('Signing is disabled in browser tests.'))),on:(name,listener)=>listeners[name]=listener,removeListener:(name)=>delete listeners[name]};
  });
+ await page.route('**/api/config',route=>route.fulfill({json:{liveAvailable:null,sponsored:{available:true,checksPerDay:3}}}));
+ let sponsoredCalls=0;
+ await page.route('**/api/sponsored',async route=>{sponsoredCalls++;const submitted=route.request().postDataJSON();assert.equal(submitted.url,'https://example.com/sponsored.jpg');await route.fulfill({json:{check:{...check,paymentSource:'lensy',viewerIsOwner:true,canShare:true}}});});
  await page.goto(base+'/app');await page.getByRole('heading',{name:'New check',exact:true}).waitFor();
+ await page.getByRole('button',{name:'Check media',exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'Connect wallet',exact:true}).count(),0);
+ await page.getByLabel('Media URL',{exact:true}).fill('https://example.com/sponsored.jpg');
+ await page.getByRole('button',{name:'Check media',exact:true}).click();await page.getByText('Covered by Lensy · Reported costs are network charges paid by the app.').waitFor();assert.equal(sponsoredCalls,1);assert.equal(await page.evaluate(()=>window.__walletRequests.filter(m=>['personal_sign','eth_requestAccounts'].includes(m)).length),0);
+ await page.getByRole('button',{name:'New check',exact:true}).click();
+ await page.getByRole('button',{name:'Pay with my wallet',exact:true}).click();
  await page.getByRole('button',{name:'Connect wallet',exact:true}).click();await page.getByRole('button',{name:'Connect Ethereum wallet',exact:true}).click();
  await page.getByRole('button',{name:'0x1111…1111'}).waitFor();
  await page.evaluate(()=>window.__testWalletListeners.accountsChanged(['0x'+'3'.repeat(40)]));await page.getByRole('button',{name:'0x3333…3333'}).waitFor();
@@ -63,7 +71,7 @@ try{
  const other={...check,id:comparisonId,name:'comparison-b.jpg',createdAt:'2020-01-01T00:00:00.000Z',verdict:'Likely manipulated',summary:'Second isolated comparison fixture.',confidence:null,cost:null,knownCost:'0.000009',status:'partial',providers:[{intent:VERIFY_INTENT,status:'succeeded',cost:'0.000009',response:{result_shape:'intent',result:{verdict:'Likely manipulated',summary:'Second isolated comparison fixture.',findings:['Different provider assessment.']}}},{intent:'IMAGE_CAPTIONING_GENERAL',status:'unknown',cost:null,error:'Connection interrupted.'}],receipts:[]};
  const put=async c=>storage.bindings.DB.prepare('INSERT INTO checks (id,owner,created_at,name,media,media_type,mode,status,result) VALUES (?,?,?,?,?,?,?,?,?)').bind(c.id,owner,c.createdAt,c.name,c.media,c.mediaType,'live',c.status,JSON.stringify(c)).run();
  await put(other);for(let i=0;i<51;i++)await put({...check,id:crypto.randomUUID(),name:'pagination-fixture-'+i+'.jpg',createdAt:new Date(Date.now()-i*1000).toISOString()});
- await page.getByRole('button',{name:'My checks',exact:true}).click();await page.getByLabel('Search checks').fill('comparison-b');await page.getByRole('checkbox',{name:'Compare comparison-b.jpg',exact:true}).check();
+ await page.getByRole('button',{name:'My checks',exact:true}).click();await page.getByLabel('Search checks').fill('comparison-b');await page.mouse.move(900,400);await page.waitForFunction(()=>document.querySelector('.sidebar').getBoundingClientRect().width<80);await page.getByRole('checkbox',{name:'Compare comparison-b.jpg',exact:true}).check();
  await page.getByLabel('Search checks').fill('browser-check');await page.getByRole('checkbox',{name:'Compare browser-check.jpg',exact:true}).check();
  await page.getByRole('button',{name:'Compare selected',exact:true}).click();await page.waitForURL('**/app/compare?ids=*');await page.getByRole('heading',{name:'Compare checks',exact:true}).waitFor();await page.getByRole('article',{name:'Comparison: comparison-b.jpg',exact:true}).waitFor();
  await page.getByText('Provider assessments differ across these checks.',{exact:false}).waitFor();assert.equal(await page.locator('.comparison-card').count(),2);assert.ok((await page.locator('.comparison-overview').innerText()).includes('Not reported'));assert.ok((await page.locator('.comparison-note').allTextContents()).join(' ').includes('$0.010009'));
