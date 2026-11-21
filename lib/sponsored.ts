@@ -3,6 +3,7 @@ import {db,fromRow,quote,VERIFY,CAPTION} from './server';
 import {assembleCheck,readPaymentReceipt} from './verification';
 import {toMicros,fromMicros} from './money';
 import type {Check,ProviderResult,QuoteItem} from './lensy';
+import type {UploadedMedia} from './uploads';
 
 const API='https://backend.telegraphprotocol.com';
 export function sponsorConfig(){
@@ -55,7 +56,7 @@ async function finish(id:string,owner:string,fallback:Check):Promise<Check>{
   return {...result,viewerIsOwner:true,canShare:['complete','partial'].includes(result.status)};
  }catch{return {...fallback,viewerIsOwner:true,persistenceWarning:true,canShare:false,warning:[fallback.warning,'Could not save the complete report. Download it now; do not resubmit the purchase.'].filter(Boolean).join(' ')};}
 }
-export async function beginSponsored(owner:string,id:string,url:string,caption:boolean){
+export async function beginSponsored(owner:string,id:string,url:string,caption:boolean,upload?:UploadedMedia){
  const existing=await db().prepare('SELECT * FROM checks WHERE id = ?').bind(id).first();
  if(existing)return existing.owner===owner?{status:200,check:fromRow(existing,owner)}:{status:409,error:'This request ID is already in use.'};
  const config=sponsorConfig();if(!config.available)return {status:503,error:'Lensy-funded checks are not available yet. The owner must configure and fund the Lensy account.'};
@@ -71,8 +72,9 @@ export async function beginSponsored(owner:string,id:string,url:string,caption:b
  ON CONFLICT(check_id) DO NOTHING RETURNING check_id`).bind(id,owner,day,reserved,now+900000,day,reserved,config.daily,owner,day,config.checks,now).first();
  if(!claim)return {status:429,error:'The Lensy daily allowance is used or checks are busy. Try again later.'};
  const base:Check={id,name:new URL(url).pathname.split('/').pop()||'Media check',media:url,mediaType:/\.(mp4|webm|mov)(\?|$)/i.test(url)?'video':'image',mode:'live',paymentSource:'lensy',createdAt:new Date(now).toISOString(),startedAt:new Date(now).toISOString(),status:'running',verdict:'Checking media',confidence:null,summary:'Waiting for the network.',findings:[],receipts:[],cost:null,knownCost:'0.000000',providers:quotes.map(q=>({intent:q.intent,channel:'anjoman',status:'pending',cost:null}))};
+ if(upload)Object.assign(base,{uploadId:upload.id,name:upload.name,mediaType:upload.contentType,media:'/api/media/'+id});
  // Persist recovery state before the first paid request. A reservation is never refunded automatically.
- await db().prepare('INSERT INTO checks (id,owner,created_at,name,media,media_type,mode,status,result,shared,listed) VALUES (?,?,?,?,?,?,?,?,?,0,0)').bind(id,owner,base.createdAt,base.name,url,base.mediaType,'live','running',JSON.stringify(base)).run();
+ await db().prepare('INSERT INTO checks (id,owner,created_at,name,media,media_type,mode,status,result,shared,listed) VALUES (?,?,?,?,?,?,?,?,?,0,0)').bind(id,owner,base.createdAt,base.name,base.media,base.mediaType,'live','running',JSON.stringify(base)).run();
  const outcomes=await Promise.all(quotes.map(async(q,i)=>{let outcome;try{outcome=await start(q,url,config);}catch{outcome=uncertain(q.intent);}try{await db().prepare("UPDATE checks SET result = json_set(result, ?, json(?)) WHERE id = ?").bind(`$.providers[${i}]`,JSON.stringify(outcome),id).run();}catch{}return outcome;}));
  const check=await finish(id,owner,assembleCheck(base,outcomes,!outcomes.some(p=>p.status==='pending')));return {status:check.status==='running'?202:200,check};
 }

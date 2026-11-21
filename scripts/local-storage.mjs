@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile,writeFile,mkdir,unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -36,8 +36,16 @@ export const bindings={
  get LENSY_SPONSOR_CHECKS_PER_USER(){return process.env.LENSY_SPONSOR_CHECKS_PER_USER;},
 
   DB:{prepare:statement},
-  BUCKET:{async get(id){
+  BUCKET:{async put(id,value,options={}){
+    if(!/^[a-f0-9-]{36}$/.test(id))throw new Error('Invalid media key.');
+    await mkdir(path.join(directory,'media'),{recursive:true});
+    await writeFile(path.join(directory,'media',id),new Uint8Array(value));
+    await writeFile(path.join(directory,'media',id+'.json'),JSON.stringify(options.httpMetadata||{}));
+  },async delete(id){
+    if(!/^[a-f0-9-]{36}$/.test(id))throw new Error('Invalid media key.');
+    for(const suffix of ['', '.json'])try{await unlink(path.join(directory,'media',id+suffix));}catch(error){if(error.code!=='ENOENT')throw error;}
+  },async get(id){
     if(!/^[a-f0-9-]{36}$/.test(id))return null;
-    try{const body=await readFile(path.join(directory,'media',id));return {body:new Uint8Array(body),httpMetadata:{contentType:'application/octet-stream'}};}catch(error){if(error.code==='ENOENT')return null;throw error;}
+    try{const body=await readFile(path.join(directory,'media',id));let httpMetadata={contentType:'application/octet-stream'};try{httpMetadata=JSON.parse(await readFile(path.join(directory,'media',id+'.json'),'utf8'));}catch{}return {body:new Uint8Array(body),httpMetadata};}catch(error){if(error.code==='ENOENT')return null;throw error;}
   }},
 };

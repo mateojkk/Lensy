@@ -159,6 +159,49 @@ test('storage failures return the available evidence and a download warning',asy
 });
 
 const sponsorRoute=await load('app/api/sponsored/route'),configRoute=await load('app/api/config/route');
+const uploadRoute=await load('app/api/uploads/route'),mediaRoute=await load('app/api/media/[id]/route');
+const {resolveMediaInput,MAX_IMAGE_BYTES}=await load('lib/uploads');
+const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jFZkAAAAASUVORK5CYII=','base64');
+function uploadFixture(t,options={}){
+ const db=database(),env=globalThis.__lensyTestEnvironment,original=globalThis.fetch,objects=new Map();let relayed=0;
+ env.BUCKET={async put(id,bytes,metadata){objects.set(id,{body:bytes,httpMetadata:metadata.httpMetadata});},async get(id){return objects.get(id)||null;},async delete(id){objects.delete(id);}};
+ globalThis.fetch=async(url,init)=>{relayed++;assert.equal(String(url),'https://litterbox.catbox.moe/resources/internals/api.php');assert.ok(!init.headers?.Authorization);assert.equal(init.body.get('time'),'1h');assert.equal(init.body.get('reqtype'),'fileupload');assert.deepEqual(new Uint8Array(await init.body.get('fileToUpload').arrayBuffer()),new Uint8Array(png));return new Response(options.url||'https://litter.catbox.moe/testimage.png',{status:options.status||200});};
+ t.after(()=>{globalThis.fetch=original;delete env.BUCKET;});
+ const run=(bytes=png,owner=alice,extra={})=>uploadRoute.POST(new Request('https://lensy.test/api/uploads',{method:'POST',headers:{origin:'https://lensy.test','content-type':'image/png','x-file-name':encodeURIComponent('my photo.png'),...(owner?{'oai-authenticated-user-id':owner}:{}),...extra},body:bytes}));
+ return {db,objects,run,get relayed(){return relayed;}};
+}
+test('uploads retain original image bytes and use a temporary relay without Telegraph credentials',async t=>{
+ const f=uploadFixture(t),r=await f.run(),saved=await body(r);assert.equal(r.status,201);assert.equal(saved.name,'my photo.png');assert.equal(saved.contentType,'image/png');assert.equal(saved.size,png.length);assert.equal(f.relayed,1);assert.equal(f.objects.size,1);assert.ok(!('url'in saved));
+ const input=await resolveMediaInput(request('/api/sponsored',{}),{uploadId:saved.uploadId,url:'https://malicious.example/ignored.png'});assert.equal(input.url,'https://litter.catbox.moe/testimage.png');assert.equal(input.upload.name,'my photo.png');
+ assert.equal(f.db.sql.prepare('SELECT size FROM uploads').get().size,png.length);
+});
+test('uploads reject missing ownership, cross-origin, disguised files, empty and oversized bodies before relaying',async t=>{
+ const f=uploadFixture(t);
+ for(const [bytes,owner,headers,status] of [[png,null,{},400],[png,alice,{origin:'https://elsewhere.test'},403],[Buffer.from('<svg/>'),alice,{},400],[Buffer.alloc(0),alice,{},400],[png,alice,{'content-length':String(MAX_IMAGE_BYTES+1)},400],[Buffer.alloc(MAX_IMAGE_BYTES+1),alice,{},400]])assert.equal((await f.run(bytes,owner,headers)).status,status);
+ assert.equal(f.relayed,0);assert.equal(f.objects.size,0);
+});
+test('upload relay failures clean stored bytes, count quota attempts and reject unexpected output hosts',async t=>{
+ const f=uploadFixture(t,{url:'https://elsewhere.test/image.png'});
+ for(let i=0;i<10;i++)assert.equal((await f.run()).status,400);
+ assert.equal(f.objects.size,0);assert.equal(f.relayed,10);assert.equal((await f.run()).status,400);assert.equal(f.relayed,10);
+ assert.equal(f.db.sql.prepare('SELECT count(*) AS n FROM uploads').get().n,10);
+});
+test('uploaded sources require ownership and a live link; saved previews follow sharing and revocation',async t=>{
+ const f=uploadFixture(t),saved=await body(await f.run());
+ await assert.rejects(resolveMediaInput(request('/api/sponsored',{},bob),{uploadId:saved.uploadId}),/workspace/);
+ const check={...base(),status:'complete',uploadId:saved.uploadId,name:saved.name,media:'/api/media/placeholder'};seed(f.db,check);
+ const read=owner=>mediaRoute.GET(request('/api/media/'+check.id,null,owner,'GET'),params(check.id));
+ assert.equal((await read(bob)).status,404);const own=await read(alice);assert.equal(own.status,200);assert.equal(own.headers.get('content-type'),'image/png');assert.deepEqual(new Uint8Array(await own.arrayBuffer()),new Uint8Array(png));
+ f.db.sql.prepare('UPDATE uploads SET expires_at = 0').run();await assert.rejects(resolveMediaInput(request('/api/sponsored',{}),{uploadId:saved.uploadId}),/expired/);assert.equal((await read(alice)).status,200);
+ f.db.sql.prepare('UPDATE checks SET shared = 1').run();assert.equal((await read(bob)).status,200);f.db.sql.prepare('UPDATE checks SET shared = 0').run();assert.equal((await read(bob)).status,404);
+});
+test('later uploads clean expired unused images while retaining completed report originals',async t=>{
+ const f=uploadFixture(t),abandoned=await body(await f.run()),retained=await body(await f.run());
+ seed(f.db,{...base(),status:'complete',uploadId:retained.uploadId});
+ f.db.sql.prepare('UPDATE uploads SET expires_at = 0').run();await f.run();
+ assert.equal(f.objects.has(abandoned.uploadId),false);assert.equal(f.objects.has(retained.uploadId),true);
+ assert.equal(f.db.sql.prepare('SELECT count(*) AS n FROM uploads').get().n,3,'Cleanup cannot refund upload quotas');
+});
 const {sponsorConfig,sponsoredOutcome}=await load('lib/sponsored');
 function sponsorFixture(t,options={}){
  const db=database(),env=globalThis.__lensyTestEnvironment,original=globalThis.fetch;
@@ -206,6 +249,16 @@ test('insufficient allowance is explained without purchasing a job',async t=>{
 });
 test('sponsored balance, debt, and quote limits fail before a paid request',async t=>{
  for(const options of [{balance:'0'},{debt:'0.001'},{balanceStatus:401},{price:'50001'}])await t.test(JSON.stringify(options),async child=>{const f=sponsorFixture(child,options);assert.equal((await f.run()).status,503);assert.equal(f.paid,0);assert.equal(f.db.sql.prepare('SELECT COUNT(*) AS n FROM sponsorships').get().n,0);});
+});
+test('sponsored uploads send the resolved URL, retain their preview, and recover after link expiry without purchasing again',async t=>{
+ const f=sponsorFixture(t),uploadId=crypto.randomUUID(),id=crypto.randomUUID();
+ f.db.sql.prepare('INSERT INTO uploads (id,owner,created_at,expires_at,name,content_type,size,public_url) VALUES (?,?,?,?,?,?,?,?)').run(uploadId,alice,Date.now(),Date.now()+3600000,'original.png','image/png',68,'https://litter.catbox.moe/test.png');
+ const run=owner=>sponsorRoute.POST(request('/api/sponsored',{id,uploadId,caption:false},owner));
+ assert.equal((await run(bob)).status,400);assert.equal(f.paid,0);
+ const started=await body(await run(alice));assert.equal(f.paid,1);assert.equal(started.check.name,'original.png');assert.equal(started.check.media,'/api/media/'+id);assert.equal(started.check.uploadId,uploadId);
+ const paid=JSON.parse(f.calls.find(c=>c.url.endsWith('/agent/chat')).init.body);assert.equal(paid.params.media_url,'https://litter.catbox.moe/test.png');assert.ok(!paid.message.includes('localhost'));
+ f.db.sql.prepare('UPDATE uploads SET expires_at = 0').run();assert.equal((await run(alice)).status,200);assert.equal(f.paid,1);
+ const complete=await body(await checkRoute.GET(request('/api/checks/'+id,null,alice,'GET'),params(id)));assert.equal(complete.check.uploadId,uploadId);assert.equal(complete.check.cost,'0.010000');assert.equal(f.paid,1);
 });
 test('sponsored jobs are durable, idempotent, owner-only, and polled without another purchase',async t=>{
  const f=sponsorFixture(t),id=crypto.randomUUID();const first=await body(await f.run(id,alice,true));assert.equal(first.check.paymentSource,'lensy');assert.equal(first.check.status,'running');assert.equal(first.check.providers.length,2);assert.equal(f.paid,2);assert.ok(first.check.providers.every(p=>p.jobId));

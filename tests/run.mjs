@@ -3,7 +3,7 @@ import path from 'node:path';
 import ts from 'typescript';
 import {spawnSync} from 'node:child_process';
 const root=process.cwd(),output=path.join(root,'.sites-runtime','test-build');
-const sources=['lib/money.ts','lib/lensy.ts','lib/evidence.ts','lib/verification.ts','lib/server.ts','lib/sponsored.ts','app/api/sponsored/route.ts','app/api/config/route.ts','app/api/quote/route.ts','app/api/verify/route.ts','app/api/checks/route.ts','app/api/compare/route.ts','app/api/checks/[id]/route.ts','app/api/shared/[token]/route.ts','app/api/stats/route.ts','app/api/checks/export/route.ts'];
+const sources=['lib/uploads.ts','app/api/uploads/route.ts','app/api/media/[id]/route.ts','lib/money.ts','lib/lensy.ts','lib/evidence.ts','lib/verification.ts','lib/server.ts','lib/sponsored.ts','app/api/sponsored/route.ts','app/api/config/route.ts','app/api/quote/route.ts','app/api/verify/route.ts','app/api/checks/route.ts','app/api/compare/route.ts','app/api/checks/[id]/route.ts','app/api/shared/[token]/route.ts','app/api/stats/route.ts','app/api/checks/export/route.ts'];
 for(const file of sources){
  const text=await fs.readFile(file,'utf8');
  let code=ts.transpileModule(text,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText;

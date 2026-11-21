@@ -23,6 +23,7 @@ export function mediaUrl(value: unknown) {
 export function fromRow(row: Record<string,unknown>, owner?:string|null): Check {
   const stored=JSON.parse(row.result as string);
   const base:Check={id:String(row.id),name:String(row.name),media:String(row.media),mediaType:String(row.media_type),mode:String(row.mode),createdAt:String(row.created_at),status:String(row.status),verdict:stored.verdict,confidence:stored.confidence??null,summary:stored.summary||'',findings:stored.findings||[],receipts:(stored.receipts||[]).filter((r:any)=>/^0x[a-fA-F0-9]{64}$/.test(r.hash||'')),cost:stored.cost??null,knownCost:stored.knownCost??stored.cost??'0.000000',warning:stored.warning,caption:stored.caption,paymentSource:stored.paymentSource,startedAt:stored.startedAt,updatedAt:stored.updatedAt};
+  if(typeof stored.uploadId==='string'&&/^[a-f0-9-]{36}$/.test(stored.uploadId))base.uploadId=stored.uploadId;
   const check=Array.isArray(stored.providers)?assembleCheck(base,stored.providers,row.status!=='running'):base;
   check.shared=!!row.shared;check.listed=!!row.listed;check.viewerIsOwner=!!owner&&row.owner===owner;
   check.shareUrl=check.shared?'/s/'+(row.share_token||row.id):null;

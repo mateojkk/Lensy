@@ -13,5 +13,6 @@ export type Check = {
   knownCost?:string; providers?:ProviderResult[]; startedAt?:string; updatedAt?:string;
   shareUrl?:string|null; viewerIsOwner?:boolean; canShare?:boolean; persistenceWarning?:boolean;
   paymentSource?:'lensy'|'wallet';
+  uploadId?:string;
 };
 export { formatMoney as money } from './money';

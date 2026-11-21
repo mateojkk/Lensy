@@ -1,0 +1,66 @@
+import {bucket,db,mediaUrl,requireOwner} from './server';
+
+export const MAX_IMAGE_BYTES=5*1024*1024;
+export type UploadedMedia={id:string;name:string;contentType:string};
+
+export function imageContentType(bytes:Uint8Array){
+ const starts=(values:number[])=>values.every((v,i)=>bytes[i]===v);
+ if(bytes.length>=8&&starts([137,80,78,71,13,10,26,10]))return 'image/png';
+ if(bytes.length>=3&&starts([255,216,255]))return 'image/jpeg';
+ const text=(start:number,end:number)=>String.fromCharCode(...bytes.slice(start,end));
+ if(bytes.length>=12&&text(0,4)==='RIFF'&&text(8,12)==='WEBP')return 'image/webp';
+ if(bytes.length>=6&&['GIF87a','GIF89a'].includes(text(0,6)))return 'image/gif';
+ throw new Error('Choose a PNG, JPEG, WebP or GIF image.');
+}
+
+async function readImage(req:Request){
+ const declared=req.headers.get('content-length');
+ if(declared&&(!/^\d+$/.test(declared)||Number(declared)>MAX_IMAGE_BYTES))throw new Error('Images must be 5 MB or smaller.');
+ const reader=req.body?.getReader();if(!reader)throw new Error('Choose an image to upload.');
+ const chunks:Uint8Array[]=[];let length=0;
+ try{for(;;){const {done,value}=await reader.read();if(done)break;length+=value.length;if(length>MAX_IMAGE_BYTES)throw new Error('Images must be 5 MB or smaller.');chunks.push(value);}}
+ finally{await reader.cancel().catch(()=>{});}
+ if(!length)throw new Error('The image is empty.');
+ const bytes=new Uint8Array(length);let offset=0;for(const part of chunks){bytes.set(part,offset);offset+=part.length;}
+ return {bytes,contentType:imageContentType(bytes)};
+}
+
+export async function uploadImage(req:Request){
+ const owner=requireOwner(req),{bytes,contentType}=await readImage(req);
+ let name='image';try{name=decodeURIComponent(req.headers.get('x-file-name')||'image').split(/[\\/]/).pop()!.replace(/[\x00-\x1f\x7f]/g,'').slice(0,180)||'image';}catch{throw new Error('The filename is invalid.');}
+ const id=crypto.randomUUID(),createdAt=Date.now(),expiresAt=createdAt+3600000,day=Math.floor(createdAt/86400000)*86400000;
+ // Count attempts too: an unavailable relay cannot bypass the storage allowance.
+ const claim=await db().prepare(`INSERT INTO uploads (id,owner,created_at,expires_at,name,content_type,size)
+ SELECT ?,?,?,?,?,?,? WHERE
+ (SELECT COUNT(*) FROM uploads WHERE owner = ? AND created_at >= ?) < 10 AND
+ (SELECT COUNT(*) FROM uploads WHERE created_at >= ?) < 100 RETURNING id`)
+ .bind(id,owner,createdAt,expiresAt,name,contentType,bytes.length,owner,day,day).first();
+ if(!claim)throw new Error('The image upload allowance is used for today. You can still use a public image link.');
+ const storage=bucket();
+ try{
+  const abandoned=await db().prepare("SELECT id FROM uploads WHERE expires_at < ? AND public_url IS NOT NULL AND NOT EXISTS (SELECT 1 FROM checks WHERE json_extract(checks.result, '$.uploadId') = uploads.id AND checks.status != 'quoted') LIMIT 10").bind(createdAt).all();
+  for(const row of abandoned.results){await storage.delete(String(row.id));await db().prepare('UPDATE uploads SET public_url = NULL WHERE id = ?').bind(row.id).run();}
+  await storage.put(id,bytes,{httpMetadata:{contentType}});
+  const form=new FormData();form.set('reqtype','fileupload');form.set('time','1h');form.set('fileToUpload',new Blob([bytes],{type:contentType}),'image.'+({ 'image/png':'png','image/jpeg':'jpg','image/webp':'webp','image/gif':'gif'}[contentType]));
+  const response=await fetch('https://litterbox.catbox.moe/resources/internals/api.php',{method:'POST',body:form,redirect:'error',signal:AbortSignal.timeout(45000)});
+  if(!response.ok)throw new Error('Relay rejected the upload.');
+  const value=(await response.text()).trim();
+  if(value.length>250)throw new Error('Invalid relay response.');
+  const publicUrl=new URL(value);
+  if(publicUrl.origin!=='https://litter.catbox.moe'||publicUrl.username||publicUrl.password||!/^\/[a-zA-Z0-9]+\.(png|jpg|jpeg|webp|gif)$/.test(publicUrl.pathname)||publicUrl.search||publicUrl.hash)throw new Error('Invalid relay URL.');
+  await db().prepare('UPDATE uploads SET public_url = ? WHERE id = ? AND owner = ?').bind(publicUrl.href,id,owner).run();
+  return {uploadId:id,name,contentType,size:bytes.length,expiresAt:new Date(expiresAt).toISOString()};
+ }catch{
+  await storage.delete(id).catch(()=>{});
+  throw new Error('The image could not be uploaded. No check was purchased. Try again or use a public image link.');
+ }
+}
+
+export async function resolveMediaInput(req:Request,value:any):Promise<{url:string;upload?:UploadedMedia}>{
+ if(value.uploadId===undefined)return {url:mediaUrl(value.url)};
+ if(typeof value.uploadId!=='string'||!/^[a-f0-9-]{36}$/.test(value.uploadId))throw new Error('Choose an image again.');
+ const row=await db().prepare('SELECT * FROM uploads WHERE id = ? AND owner = ?').bind(value.uploadId,requireOwner(req)).first();
+ if(!row?.public_url)throw new Error('This uploaded image is not available in your workspace.');
+ if(Number(row.expires_at)<=Date.now()+120000)throw new Error('The image link has expired. Select the image again before starting a check.');
+ return {url:String(row.public_url),upload:{id:String(row.id),name:String(row.name),contentType:String(row.content_type)}};
+}

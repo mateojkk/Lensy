@@ -23,3 +23,14 @@ export const sponsorships = sqliteTable('sponsorships', {
   reservedMicros:integer('reserved_micros').notNull(),
   activeUntil:integer('active_until').notNull(),
 },t=>[index('sponsorships_day_idx').on(t.day),index('sponsorships_owner_day_idx').on(t.owner,t.day)]);
+
+export const uploads = sqliteTable('uploads', {
+  id:text('id').primaryKey(),
+  owner:text('owner').notNull(),
+  createdAt:integer('created_at').notNull(),
+  expiresAt:integer('expires_at').notNull(),
+  name:text('name').notNull(),
+  contentType:text('content_type').notNull(),
+  size:integer('size').notNull(),
+  publicUrl:text('public_url'),
+},t=>[index('uploads_owner_created_idx').on(t.owner,t.createdAt),index('uploads_created_idx').on(t.createdAt)]);

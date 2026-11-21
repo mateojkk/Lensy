@@ -10,13 +10,13 @@ The header's moon/sun button switches between dark and light mode on both the la
 
 ## Use
 
-1. Paste a direct public HTTPS image or video URL.
+1. Choose or drop an image (PNG, JPEG, WebP or GIF up to 5 MB), or paste a direct public HTTPS image or video URL.
 2. Choose **Check media** for a Lensy-funded check (requires owner setup below).
 3. Optionally choose **Pay with my wallet** to review and sign an exact escrow quote instead.
 4. Read the actual provider response, reported confidence, cost, and original receipt.
 5. Share the stored completed check; opening it never purchases another check.
 
-Direct uploads require provider-accessible storage. This private Site cannot expose its uploaded files to external verification providers, so the verification input is a public media URL. The Site remains private; shared links are subject to Site access settings.
+Uploaded images use a temporary public Litterbox link for one hour so providers can fetch them, with an original copy retained for saved previews. The Site remains private; shared result links are subject to Site access settings.
 
 Payments use Telegraph escrow on Ethereum Sepolia. Fund your wallet's escrow following https://anjoman.ai/docs/using/escrow-inference. Lensy never asks for or stores a wallet private key.
 
@@ -37,7 +37,7 @@ Server defaults: maximum 0.30 test USDC per provider call, 1 test USDC of reserv
 
 The server checks available balance and debt, reads unsigned provider prices, atomically reserves its budget, and saves the check before starting any paid job. It uses fixed direct intents through `POST /agent/chat` with a server-controlled `maxSpendUsd`. It saves the SSE job ID immediately, then uses read-only `GET /agent/jobs/:id` polling, limited to once per check every ten seconds. Refreshes and duplicate check IDs never resubmit a paid job. Missing job IDs or uncertain connections require ledger review. A running slot expires after fifteen minutes, but its daily spending reservation stays counted.
 
-Results show **Covered by Lensy** and the account API's reported network cost. The account API may return prose instead of structured intent fields and may omit payment receipts. Lensy preserves that response, shows confidence only when explicitly returned in valid structured fields, and never manufactures a verdict, charge, or receipt. A paid account request has not been exercised without the owner's funded key.
+Results show **Covered by Lensy** and the account API's reported network cost. The account API may return prose instead of structured intent fields and may omit payment receipts. Lensy preserves that response, shows confidence only when explicitly returned in valid structured fields, and never manufactures a verdict, charge, or receipt. A funded live account check completed successfully with a reported cost of 0.01 test USDC.
 
 ## Request recovery and evidence
 
@@ -84,3 +84,6 @@ Optional browser tests use Playwright, a separate local server, and an isolated 
 `.openai/hosting.json` declares the retained Site identity, `DB`, and `BUCKET`. Sites applies the checked-in Drizzle migration on publication. Browser QA requires an available browser installation.
 
 Decorative coast photography: Unsplash photo-1473116763249-2faaef81ccda, bundled in `public/images/coast.jpg`. No verdict is assigned to this image.
+
+
+Image uploads accept PNG, JPEG, WebP and GIF originals up to 5 MB through the picker or drag-and-drop. Selection and preview stay in the browser until the user starts a check. `/api/uploads` validates file signatures and bounds streamed bodies, retains the original in R2 (local disk during development), and relays a copy to [Litterbox](https://litterbox.catbox.moe/tools.php) for a public link that expires after one hour. This is disclosed beside the picker; no extra account or key is required. Do not upload confidential images to this public relay. Telegraph receives that URL; Lensy keeps the saved result preview behind ownership/sharing checks after the relay link expires. Upload attempts are limited atomically to 10 per session and 100 globally per UTC day. Failed attempts count against those limits. Expired unreferenced copies are cleaned in bounded batches on later uploads. Completed reports keep their original images. Uploading does not itself purchase a Telegraph job.

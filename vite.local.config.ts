@@ -7,7 +7,10 @@ import { sites } from './scripts/vite/sites-vite-plugin';
 // Node-only development entrypoint. Production keeps vite.config.ts and its
 // Cloudflare bindings. The local binding implements the same SQL operations.
 export default defineConfig({
-  cacheDir:process.env.LENSY_DATA_DIRECTORY?path.resolve('node_modules','.vite-lensy-'+path.basename(process.env.LENSY_DATA_DIRECTORY)):undefined,
+  // Isolate both production builds and prior dev sessions. Reusing an optimizer
+  // URL after restart can mix cached React copies in an already-open browser tab.
+  cacheDir:path.resolve('node_modules','.vite-lensy-'+path.basename(process.env.LENSY_DATA_DIRECTORY||'local')+'-'+process.pid),
+  resolve:{dedupe:['react','react-dom']},
   server:{host:'127.0.0.1',port:Number(process.env.LENSY_PORT||5173),strictPort:true},
   plugins:[
     {name:'lensy-local-storage',enforce:'pre',resolveId(id){
