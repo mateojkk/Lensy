@@ -37,20 +37,23 @@ export async function uploadImage(req:Request){
  .bind(id,owner,createdAt,expiresAt,name,contentType,bytes.length,owner,day,day).first();
  if(!claim)throw new Error('The image upload allowance is used for today. You can still use a public image link.');
  const storage=bucket();
+ let stage='cleanup';
  try{
   const abandoned=await db().prepare("SELECT id FROM uploads WHERE expires_at < ? AND public_url IS NOT NULL AND NOT EXISTS (SELECT 1 FROM checks WHERE json_extract(checks.result, '$.uploadId') = uploads.id AND checks.status != 'quoted') LIMIT 10").bind(createdAt).all();
   for(const row of abandoned.results){await storage.delete(String(row.id));await db().prepare('UPDATE uploads SET public_url = NULL WHERE id = ?').bind(row.id).run();}
-  await storage.put(id,bytes,{httpMetadata:{contentType}});
+  stage='storage';await storage.put(id,bytes,{httpMetadata:{contentType}});
   const form=new FormData();form.set('reqtype','fileupload');form.set('time','1h');form.set('fileToUpload',new Blob([bytes],{type:contentType}),'image.'+({ 'image/png':'png','image/jpeg':'jpg','image/webp':'webp','image/gif':'gif'}[contentType]));
-  const response=await fetch('https://litterbox.catbox.moe/resources/internals/api.php',{method:'POST',body:form,redirect:'error',signal:AbortSignal.timeout(45000)});
+  stage='relay';const response=await fetch('https://litterbox.catbox.moe/resources/internals/api.php',{method:'POST',body:form,redirect:'error',signal:AbortSignal.timeout(45000)});
+  stage='relay-response-'+response.status;
   if(!response.ok)throw new Error('Relay rejected the upload.');
   const value=(await response.text()).trim();
   if(value.length>250)throw new Error('Invalid relay response.');
   const publicUrl=new URL(value);
   if(publicUrl.origin!=='https://litter.catbox.moe'||publicUrl.username||publicUrl.password||!/^\/[a-zA-Z0-9]+\.(png|jpg|jpeg|webp|gif)$/.test(publicUrl.pathname)||publicUrl.search||publicUrl.hash)throw new Error('Invalid relay URL.');
-  await db().prepare('UPDATE uploads SET public_url = ? WHERE id = ? AND owner = ?').bind(publicUrl.href,id,owner).run();
+  stage='metadata';await db().prepare('UPDATE uploads SET public_url = ? WHERE id = ? AND owner = ?').bind(publicUrl.href,id,owner).run();
   return {uploadId:id,name,contentType,size:bytes.length,expiresAt:new Date(expiresAt).toISOString()};
- }catch{
+ }catch(error){
+  console.error('Lensy upload failed at '+stage+': '+(error instanceof Error?error.message:'Unknown error'));
   await storage.delete(id).catch(()=>{});
   throw new Error('The image could not be uploaded. No check was purchased. Try again or use a public image link.');
  }
