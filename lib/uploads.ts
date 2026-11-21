@@ -43,7 +43,7 @@ export async function uploadImage(req:Request){
   for(const row of abandoned.results){await storage.delete(String(row.id));await db().prepare('UPDATE uploads SET public_url = NULL WHERE id = ?').bind(row.id).run();}
   stage='storage';await storage.put(id,bytes,{httpMetadata:{contentType}});
   const form=new FormData();form.set('reqtype','fileupload');form.set('time','1h');form.set('fileToUpload',new Blob([bytes],{type:contentType}),'image.'+({ 'image/png':'png','image/jpeg':'jpg','image/webp':'webp','image/gif':'gif'}[contentType]));
-  stage='relay';const response=await fetch('https://litterbox.catbox.moe/resources/internals/api.php',{method:'POST',body:form,redirect:'error',signal:AbortSignal.timeout(45000)});
+  stage='relay';const response=await fetch('https://litterbox.catbox.moe/resources/internals/api.php',{method:'POST',body:form,redirect:'manual',signal:AbortSignal.timeout(45000)});
   stage='relay-response-'+response.status;
   if(!response.ok)throw new Error('Relay rejected the upload.');
   const value=(await response.text()).trim();

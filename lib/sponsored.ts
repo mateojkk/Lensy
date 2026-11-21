@@ -19,7 +19,7 @@ async function body(res:Response,key:string){
  try{if(reader)for(;;){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>1000000)throw new Error('Report too large.');text+=decoder.decode(value,{stream:true});}text+=decoder.decode();return redact(JSON.parse(text),key) as any;}
  finally{await reader?.cancel().catch(()=>{});}
 }
-async function get(path:string,key:string){const res=await fetch(API+path,{headers:{Authorization:'Bearer '+key},redirect:'error',signal:AbortSignal.timeout(15000)});return {res,data:await body(res,key)};}
+async function get(path:string,key:string){const res=await fetch(API+path,{headers:{Authorization:'Bearer '+key},redirect:'manual',signal:AbortSignal.timeout(15000)});return {res,data:await body(res,key)};}
 const validJob=(value:unknown):value is string=>typeof value==='string'&&/^[a-zA-Z0-9_-]{1,100}$/.test(value);
 export function sponsoredOutcome(intent:string,res:Response,data:any,key=''):ProviderResult{
  data=redact(data,key);const receipt=readPaymentReceipt(intent,res);if(receipt)receipt.raw=redact(receipt.raw,key);
@@ -29,7 +29,7 @@ export function sponsoredOutcome(intent:string,res:Response,data:any,key=''):Pro
 }
 function uncertain(intent:string):ProviderResult{return {intent,channel:'anjoman',status:'unknown',cost:null,error:'The connection ended before a job ID could be saved. Review the Lensy account ledger before starting another check.'};}
 async function start(item:QuoteItem,url:string,config:ReturnType<typeof sponsorConfig>):Promise<ProviderResult>{
- const res=await fetch(API+'/agent/chat',{method:'POST',headers:{Authorization:'Bearer '+config.key,'Content-Type':'application/json'},body:JSON.stringify({message:(item.intent===VERIFY?'Verify this public media: ':'Describe this public image: ')+url,intent:item.intent,params:(item.requestBody as any).params,stream:true,maxSpendUsd:config.call/1000000}),redirect:'error',signal:AbortSignal.timeout(30000)});
+ const res=await fetch(API+'/agent/chat',{method:'POST',headers:{Authorization:'Bearer '+config.key,'Content-Type':'application/json'},body:JSON.stringify({message:(item.intent===VERIFY?'Verify this public media: ':'Describe this public image: ')+url,intent:item.intent,params:(item.requestBody as any).params,stream:true,maxSpendUsd:config.call/1000000}),redirect:'manual',signal:AbortSignal.timeout(30000)});
  if(!res.ok||!res.headers.get('content-type')?.includes('text/event-stream')){
   try{return sponsoredOutcome(item.intent,res,await body(res,config.key),config.key);}
   catch{return {...sponsoredOutcome(item.intent,res,{},config.key),status:'unknown',error:'The response body could not be read. Review the account ledger before starting another check.'};}

@@ -165,7 +165,7 @@ const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42
 function uploadFixture(t,options={}){
  const db=database(),env=globalThis.__lensyTestEnvironment,original=globalThis.fetch,objects=new Map();let relayed=0;
  env.BUCKET={async put(id,bytes,metadata){objects.set(id,{body:bytes,httpMetadata:metadata.httpMetadata});},async get(id){return objects.get(id)||null;},async delete(id){objects.delete(id);}};
- globalThis.fetch=async(url,init)=>{relayed++;assert.equal(String(url),'https://litterbox.catbox.moe/resources/internals/api.php');assert.ok(!init.headers?.Authorization);assert.equal(init.body.get('time'),'1h');assert.equal(init.body.get('reqtype'),'fileupload');assert.deepEqual(new Uint8Array(await init.body.get('fileToUpload').arrayBuffer()),new Uint8Array(png));return new Response(options.url||'https://litter.catbox.moe/testimage.png',{status:options.status||200});};
+ globalThis.fetch=async(url,init)=>{relayed++;assert.equal(String(url),'https://litterbox.catbox.moe/resources/internals/api.php');assert.equal(init.redirect,'manual');assert.ok(!init.headers?.Authorization);assert.equal(init.body.get('time'),'1h');assert.equal(init.body.get('reqtype'),'fileupload');assert.deepEqual(new Uint8Array(await init.body.get('fileToUpload').arrayBuffer()),new Uint8Array(png));return new Response(options.url||'https://litter.catbox.moe/testimage.png',{status:options.status||200});};
  t.after(()=>{globalThis.fetch=original;delete env.BUCKET;});
  const run=(bytes=png,owner=alice,extra={})=>uploadRoute.POST(new Request('https://lensy.test/api/uploads',{method:'POST',headers:{origin:'https://lensy.test','content-type':'image/png','x-file-name':encodeURIComponent('my photo.png'),...(owner?{'oai-authenticated-user-id':owner}:{}),...extra},body:bytes}));
  return {db,objects,run,get relayed(){return relayed;}};
@@ -212,7 +212,7 @@ function sponsorFixture(t,options={}){
  globalThis.fetch=async(url,init={})=>{
   const parsed=new URL(url),method=init.method||'GET';calls.push({url:String(url),method,init});
   if(parsed.hostname==='backend.telegraphprotocol.com'){
-   assert.equal(init.headers.Authorization,'Bearer '+env.TELEGRAPH_API_KEY);
+   assert.equal(init.headers.Authorization,'Bearer '+env.TELEGRAPH_API_KEY);assert.equal(init.redirect,'manual','Worker-compatible fetch must not follow authenticated redirects');
    if(parsed.pathname==='/engine/escrow/balance')return Response.json({effectiveBalance:options.balance??'5',agentDebt:options.debt??'0'},{status:options.balanceStatus??200});
    if(parsed.pathname==='/agent/chat'){
     paid++;const value=JSON.parse(init.body);assert.ok([VERIFY_INTENT,CAPTION].includes(value.intent));assert.equal(value.maxSpendUsd,Number(env.LENSY_SPONSOR_MAX_CALL_USDC||'0.30'));assert.ok(!('paymentMethod'in value));assert.ok(value.params);assert.equal(db.sql.prepare('SELECT count(*) AS n FROM checks WHERE status = ?').get('running').n>0,true,'Saved before purchase');
@@ -248,7 +248,7 @@ test('insufficient allowance is explained without purchasing a job',async t=>{
  const response=await f.run();assert.equal(response.status,503);const result=await body(response);assert.match(result.error,/0\.300000 test USDC/);assert.match(result.error,/not the final charge/);assert.equal(f.paid,0);
 });
 test('sponsored balance, debt, and quote limits fail before a paid request',async t=>{
- for(const options of [{balance:'0'},{debt:'0.001'},{balanceStatus:401},{price:'50001'}])await t.test(JSON.stringify(options),async child=>{const f=sponsorFixture(child,options);assert.equal((await f.run()).status,503);assert.equal(f.paid,0);assert.equal(f.db.sql.prepare('SELECT COUNT(*) AS n FROM sponsorships').get().n,0);});
+ for(const options of [{balance:'0'},{debt:'0.001'},{balanceStatus:401},{balanceStatus:302},{price:'50001'}])await t.test(JSON.stringify(options),async child=>{const f=sponsorFixture(child,options);assert.equal((await f.run()).status,503);assert.equal(f.paid,0);assert.equal(f.db.sql.prepare('SELECT COUNT(*) AS n FROM sponsorships').get().n,0);});
 });
 test('sponsored uploads send the resolved URL, retain their preview, and recover after link expiry without purchasing again',async t=>{
  const f=sponsorFixture(t),uploadId=crypto.randomUUID(),id=crypto.randomUUID();
