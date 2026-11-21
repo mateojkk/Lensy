@@ -165,7 +165,7 @@ const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42
 function uploadFixture(t,options={}){
  const db=database(),env=globalThis.__lensyTestEnvironment,original=globalThis.fetch,objects=new Map();let relayed=0;
  env.BUCKET={async put(id,bytes,metadata){objects.set(id,{body:bytes,httpMetadata:metadata.httpMetadata});},async get(id){return objects.get(id)||null;},async delete(id){objects.delete(id);}};
- globalThis.fetch=async(url,init)=>{relayed++;assert.equal(String(url),'https://litterbox.catbox.moe/resources/internals/api.php');assert.equal(init.redirect,'manual');assert.ok(!init.headers?.Authorization);assert.equal(init.body.get('time'),'1h');assert.equal(init.body.get('reqtype'),'fileupload');assert.deepEqual(new Uint8Array(await init.body.get('fileToUpload').arrayBuffer()),new Uint8Array(png));return new Response(options.url||'https://litter.catbox.moe/testimage.png',{status:options.status||200});};
+ globalThis.fetch=async(url,init)=>{if(new URL(url).hostname==='litter.catbox.moe'){assert.equal(init.redirect,'manual');return new Response(options.remoteBytes||png,{headers:{'content-type':'image/png'}});}relayed++;assert.equal(String(url),'https://litterbox.catbox.moe/resources/internals/api.php');assert.equal(init.redirect,'manual');assert.ok(!init.headers?.Authorization);assert.equal(init.body.get('time'),'1h');assert.equal(init.body.get('reqtype'),'fileupload');assert.deepEqual(new Uint8Array(await init.body.get('fileToUpload').arrayBuffer()),new Uint8Array(png));return new Response(options.url||'https://litter.catbox.moe/testimage.png',{status:options.status||200});};
  t.after(()=>{globalThis.fetch=original;delete env.BUCKET;});
  const run=(bytes=png,owner=alice,extra={})=>uploadRoute.POST(new Request('https://lensy.test/api/uploads',{method:'POST',headers:{origin:'https://lensy.test','content-type':'image/png','x-file-name':encodeURIComponent('my photo.png'),...(owner?{'oai-authenticated-user-id':owner}:{}),...extra},body:bytes}));
  return {db,objects,run,get relayed(){return relayed;}};
@@ -201,6 +201,18 @@ test('later uploads clean expired unused images while retaining completed report
  f.db.sql.prepare('UPDATE uploads SET expires_at = 0').run();await f.run();
  assert.equal(f.objects.has(abandoned.uploadId),false);assert.equal(f.objects.has(retained.uploadId),true);
  assert.equal(f.db.sql.prepare('SELECT count(*) AS n FROM uploads').get().n,3,'Cleanup cannot refund upload quotas');
+});
+test('browser relay fallback verifies the remote bytes and ownership before making a source available',async t=>{
+ const f=uploadFixture(t,{status:412}),saved=await body(await f.run());assert.equal(saved.relayRequired,true);assert.equal(f.objects.size,1);
+ const finalize=(owner,url='https://litter.catbox.moe/test.png')=>uploadRoute.PATCH(request('/api/uploads',{uploadId:saved.uploadId,url},owner,'PATCH'));
+ await assert.rejects(resolveMediaInput(request('/api/sponsored',{}),{uploadId:saved.uploadId}),/available/);
+ assert.equal((await finalize(bob)).status,400);assert.equal((await finalize(alice,'https://elsewhere.test/file.png')).status,400);
+ assert.equal((await finalize(alice)).status,200);assert.equal((await resolveMediaInput(request('/api/sponsored',{}),{uploadId:saved.uploadId})).url,'https://litter.catbox.moe/test.png');
+});
+test('browser relay cannot substitute a different image for a retained original',async t=>{
+ const changed=Buffer.from(png);changed[20]^=1;const f=uploadFixture(t,{status:412,remoteBytes:changed}),saved=await body(await f.run());
+ assert.equal((await uploadRoute.PATCH(request('/api/uploads',{uploadId:saved.uploadId,url:'https://litter.catbox.moe/test.png'},alice,'PATCH'))).status,400);
+ assert.equal(f.db.sql.prepare('SELECT public_url FROM uploads').get().public_url,null);
 });
 const {sponsorConfig,sponsoredOutcome}=await load('lib/sponsored');
 function sponsorFixture(t,options={}){

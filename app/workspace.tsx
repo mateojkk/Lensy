@@ -108,6 +108,12 @@ export default function LensyApp({shareId,checkId,comparison=false}:{shareId?:st
   if(uploaded&&Date.parse(uploaded.expiresAt)>Date.now()+120000)return {uploadId:uploaded.uploadId};
   setProgress('Uploading image…');
   const saved=await api('/api/uploads',{method:'POST',headers:{'Content-Type':file.type,'X-File-Name':encodeURIComponent(file.name)},body:file});
+  if(saved.relayRequired){
+   const form=new FormData();form.set('reqtype','fileupload');form.set('time','1h');form.set('fileToUpload',file,'image.'+({'image/png':'png','image/jpeg':'jpg','image/webp':'webp','image/gif':'gif'}[file.type]||'png'));
+   const response=await fetch('https://litterbox.catbox.moe/resources/internals/api.php',{method:'POST',body:form,signal:AbortSignal.timeout(45000)});
+   if(!response.ok)throw new Error('The image could not be uploaded. No check was purchased. Try again or use a link.');
+   await api('/api/uploads',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({uploadId:saved.uploadId,url:(await response.text()).trim()})});
+  }
   setUploaded(saved);return {uploadId:saved.uploadId};
  }
  async function submit(){if(busy||!ready)return;setBusy(true);setError('');try{const source=await mediaSource();setProgress('Getting quote…');setQuote(await api('/api/quote',send({...source,caption})));}catch(e){setError(message(e));}finally{setBusy(false);setProgress('');}}
