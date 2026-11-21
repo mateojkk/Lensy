@@ -172,7 +172,7 @@ function sponsorFixture(t,options={}){
    assert.equal(init.headers.Authorization,'Bearer '+env.TELEGRAPH_API_KEY);
    if(parsed.pathname==='/engine/escrow/balance')return Response.json({effectiveBalance:options.balance??'5',agentDebt:options.debt??'0'},{status:options.balanceStatus??200});
    if(parsed.pathname==='/agent/chat'){
-    paid++;const value=JSON.parse(init.body);assert.ok([VERIFY_INTENT,CAPTION].includes(value.intent));assert.equal(value.maxSpendUsd,.05);assert.ok(!('paymentMethod'in value));assert.ok(value.params);assert.equal(db.sql.prepare('SELECT count(*) AS n FROM checks WHERE status = ?').get('running').n>0,true,'Saved before purchase');
+    paid++;const value=JSON.parse(init.body);assert.ok([VERIFY_INTENT,CAPTION].includes(value.intent));assert.equal(value.maxSpendUsd,Number(env.LENSY_SPONSOR_MAX_CALL_USDC||'0.30'));assert.ok(!('paymentMethod'in value));assert.ok(value.params);assert.equal(db.sql.prepare('SELECT count(*) AS n FROM checks WHERE status = ?').get('running').n>0,true,'Saved before purchase');
     if(options.lost)throw new Error('Connection lost');
     if(options.direct)return Response.json({status:'complete',answer:'Network response',costUsd:.01,jobId:'direct-job'});
     const data=new TextEncoder().encode('event: conversation\r\ndata: {"conversationId":"test"}\r\n\r\nevent: job\r\ndata: {"jobId":"job-'+paid+'"}\r\n\r\n');let offset=0;
@@ -194,6 +194,15 @@ test('sponsored configuration never exposes the key and no-key checks never purc
  const config=await body(await configRoute.GET(request('/api/config',null,alice,'GET')));assert.equal(config.sponsored.available,false);assert.ok(!JSON.stringify(config).includes('anjoman_'));
  assert.equal((await f.run()).status,503);assert.equal(f.calls.length,0);
  f.env.TELEGRAPH_API_KEY='anjoman_test_only_key';f.env.LENSY_SPONSOR_DAILY_USDC='invalid';assert.equal(sponsorConfig().available,false);assert.equal((await f.run()).status,503);assert.equal(f.paid,0);
+});
+test('default account allowance permits routing while storing only the actual reported charge',async t=>{
+ const f=sponsorFixture(t,{direct:true,balance:'1'});delete f.env.LENSY_SPONSOR_MAX_CALL_USDC;
+ const result=await body(await f.run());assert.equal(result.check.status,'complete');assert.equal(result.check.cost,'0.010000');assert.equal(f.paid,1);
+ assert.equal(f.db.sql.prepare('SELECT reserved_micros FROM sponsorships').get().reserved_micros,300000);
+});
+test('insufficient allowance is explained without purchasing a job',async t=>{
+ const f=sponsorFixture(t,{balance:'0.29'});delete f.env.LENSY_SPONSOR_MAX_CALL_USDC;
+ const response=await f.run();assert.equal(response.status,503);const result=await body(response);assert.match(result.error,/0\.300000 test USDC/);assert.match(result.error,/not the final charge/);assert.equal(f.paid,0);
 });
 test('sponsored balance, debt, and quote limits fail before a paid request',async t=>{
  for(const options of [{balance:'0'},{debt:'0.001'},{balanceStatus:401},{price:'50001'}])await t.test(JSON.stringify(options),async child=>{const f=sponsorFixture(child,options);assert.equal((await f.run()).status,503);assert.equal(f.paid,0);assert.equal(f.db.sql.prepare('SELECT COUNT(*) AS n FROM sponsorships').get().n,0);});

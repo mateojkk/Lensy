@@ -6,7 +6,8 @@ import type {Check,ProviderResult,QuoteItem} from './lensy';
 
 const API='https://backend.telegraphprotocol.com';
 export function sponsorConfig(){
- const key=(env.TELEGRAPH_API_KEY||'').trim(),call=toMicros(env.LENSY_SPONSOR_MAX_CALL_USDC||'0.05'),daily=toMicros(env.LENSY_SPONSOR_DAILY_USDC||'1');
+ // Account routing temporarily authorizes up to 0.26 USDC; the final reported cost may be lower.
+ const key=(env.TELEGRAPH_API_KEY||'').trim(),call=toMicros(env.LENSY_SPONSOR_MAX_CALL_USDC||'0.30'),daily=toMicros(env.LENSY_SPONSOR_DAILY_USDC||'1');
  const checks=Number(env.LENSY_SPONSOR_CHECKS_PER_USER||'3');
  const valid=call!==null&&daily!==null&&call>0n&&call<=1000000n&&daily>=call&&daily<=100000000n&&Number.isInteger(checks)&&checks>0&&checks<=100;
  return {key,available:!!key&&env.LENSY_SPONSOR_ENABLED!=='false'&&valid,call:Number(call||0n),daily:Number(daily||0n),checks};
@@ -59,7 +60,7 @@ export async function beginSponsored(owner:string,id:string,url:string,caption:b
  if(existing)return existing.owner===owner?{status:200,check:fromRow(existing,owner)}:{status:409,error:'This request ID is already in use.'};
  const config=sponsorConfig();if(!config.available)return {status:503,error:'Lensy-funded checks are not available yet. The owner must configure and fund the Lensy account.'};
  const reserved=config.call*(caption?2:1);
- try{const {res,data}=await get('/engine/escrow/balance',config.key),balance=toMicros(data?.effectiveBalance),debt=toMicros(data?.agentDebt);if(!res.ok||balance===null||debt===null)throw new Error();if(balance<BigInt(reserved)||debt>0n)return {status:503,error:'Lensy needs an account top-up before it can cover this check.'};}catch{return {status:503,error:'Could not confirm the Lensy account balance. No check was purchased.'};}
+ try{const {res,data}=await get('/engine/escrow/balance',config.key),balance=toMicros(data?.effectiveBalance),debt=toMicros(data?.agentDebt);if(!res.ok||balance===null||debt===null)throw new Error();if(debt>0n)return {status:503,error:'Lensy must settle its account debt before covering another check.'};if(balance<BigInt(reserved))return {status:503,error:'Lensy needs '+fromMicros(BigInt(reserved))+' test USDC available for this check’s spending allowance. This allowance is not the final charge. No check was purchased.'};}catch{return {status:503,error:'Could not confirm the Lensy account balance. No check was purchased.'};}
  let quotes:QuoteItem[];
  try{quotes=await Promise.all([VERIFY,...(caption?[CAPTION]:[])].map(intent=>quote(intent,url)));if(quotes.some(q=>BigInt(q.amount)>BigInt(config.call)||!(q.requestBody as any).params))throw new Error();}catch{return {status:503,error:'A provider is unavailable or exceeds the Lensy spending limit. No check was purchased.'};}
  const now=Date.now(),day=new Date(now).toISOString().slice(0,10);
